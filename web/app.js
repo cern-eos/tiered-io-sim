@@ -165,6 +165,7 @@ function fill(cfg) {
   setNum("compute-read", cfg.workload.computeReadGBps, 4);
   setNum("compute-write", cfg.workload.computeWriteGBps, 4);
   setNum("nvme-hit", cfg.workload.nvmeHitRate * 100, 4);
+  setNum("nvme-through", (cfg.workload.nvmeThroughFraction || 0) * 100, 4);
   setNum("working-set", cfg.workload.workingSetPB, 4);
   setNum("reserve-pct", cfg.workload.reserveFraction * 100, 4);
   setNum("archive-eb", cfg.workload.archiveEBPerYear, 4);
@@ -193,7 +194,7 @@ function readConfig() {
     "hdd-nodes", "hdd-drives", "hdd-size", "hdd-bw-mb", "hdd-iops",
     "read-streams", "write-streams", "segment-mb", "seek-ms",
     "tape-drives", "tape-bw-mb", "tape-capacity",
-    "file-size", "compute-read", "compute-write", "nvme-hit", "prefetch-hours",
+    "file-size", "compute-read", "compute-write", "nvme-hit", "nvme-through", "prefetch-hours",
     "working-set", "reserve-pct", "baseline-eb", "observed-scale",
     "archive-eb", "recall",
     "price-node", "price-nvme", "price-hdd", "price-tape-drive", "price-tape",
@@ -242,6 +243,7 @@ function readConfig() {
       computeReadGBps: v["compute-read"],
       computeWriteGBps: v["compute-write"],
       nvmeHitRate: v["nvme-hit"] / 100,
+      nvmeThroughFraction: v["nvme-through"] / 100,
       workingSetPB: v["working-set"],
       reserveFraction: v["reserve-pct"] / 100,
       archiveEBPerYear: v["archive-eb"],
@@ -308,8 +310,140 @@ function render(r) {
   renderFormula(r);
   renderCost(r);
   renderSweep(r);
+  renderFlow(r);
   renderSummary(r);
   markPresets(r);
+}
+
+function flowDots(gbps) {
+  if (!(gbps > 0)) return 0;
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return 1;
+  if (gbps < 20) return 2;
+  if (gbps < 200) return 3;
+  if (gbps < 1000) return 4;
+  return 5;
+}
+
+function flowDur(gbps) {
+  const dur = Math.max(0.65, 2.8 - Math.log10((gbps || 0) + 10) * 0.55);
+  return dur.toFixed(2);
+}
+
+function flowLane(direction, label, gbps, color) {
+  const row = el("div", "lane " + direction);
+  const top = el("div", "lane-top");
+  top.append(el("span", "", label), el("span", "lane-v", bw(gbps)));
+  const track = el("div", "track" + (gbps > 0 ? "" : " idle"));
+  const n = flowDots(gbps);
+  const dur = flowDur(gbps);
+  for (let i = 0; i < n; i++) {
+    const dot = document.createElement("i");
+    dot.style.setProperty("--flow-color", color);
+    dot.style.animationDuration = dur + "s";
+    dot.style.animationDelay = (-dur * i / n).toFixed(2) + "s";
+    track.append(dot);
+  }
+  row.append(top, track);
+  return row;
+}
+
+function flowMeter(used, cap) {
+  const wrap = el("div", "flow-meter");
+  const bar = el("div", "flow-bar");
+  const capSafe = Math.max(cap, 0);
+  const usedSafe = Math.max(used, 0);
+  const reserve = capSafe - usedSafe;
+  const usedPct = capSafe <= 0 ? (usedSafe > 0 ? 100 : 0) : Math.min(100, 100 * usedSafe / capSafe);
+  const usedEl = el("span", "used");
+  const reserveEl = el("span", "reserve");
+  usedEl.style.width = usedPct + "%";
+  reserveEl.style.width = Math.max(0, 100 - usedPct) + "%";
+  if (reserve < -0.05) bar.classList.add("over");
+  bar.append(usedEl, reserveEl);
+  const label = reserve < -0.05
+    ? `Used ${bw(usedSafe)} · Over by ${bw(-reserve)}`
+    : `Used ${bw(usedSafe)} · Reserve ${bw(Math.max(0, reserve))}`;
+  wrap.append(bar, el("p", "", label));
+  return wrap;
+}
+
+function flowPort(name, rate, note) {
+  const box = el("div", "port");
+  box.append(el("span", "k", name), el("b", "", rate), el("span", "note", note));
+  return box;
+}
+
+function renderFlow(r) {
+  const host = document.getElementById("flow-anim");
+  if (!host || !r.flow) return;
+  const f = r.flow;
+  const archiveOut = f.hddArchiveGBps + (f.hddRepackReadGBps || 0);
+  const recallIn = f.hddRecallGBps + (f.hddRepackWriteGBps || 0);
+  const readStreams = intish(r.hdd.logicalReadStreams || 0);
+  const writeStreams = intish(r.hdd.logicalWriteStreams || 0);
+
+  const clients = el("aside", "flow-clients");
+  clients.append(
+    el("h4", "", "Clients"),
+    el("p", "", "Read " + bw(f.computeReadGBps)),
+    el("p", "", "Write " + bw(f.computeWriteGBps)),
+    el("p", "", "NVMe hit " + pct(f.nvmeHitRate)),
+    el("p", "", "Read-through " + pct(f.nvmeThroughFraction || 0)),
+  );
+
+  const through = f.nvmeThroughGBps || 0;
+  const nvmeEgress = f.nvmeServedGBps + through;
+  const nvmeLanes = el("div", "flow-lanes nvme");
+  nvmeLanes.append(
+    flowLane("to-client", "Egress", nvmeEgress, "#e4c39a"),
+    flowLane("to-client", "Through", through, "#c4894a"),
+  );
+
+  const nvme = el("article", "flow-tier nvme");
+  const nvmePorts = el("div", "ports");
+  nvmePorts.append(
+    flowPort("Egress", bw(nvmeEgress), "hits and read-through to clients"),
+    flowPort("Ingress", bw(through), "HDD reads passing through"),
+  );
+  nvme.append(el("h4", "", "NVMe"), flowMeter(nvmeEgress, r.nvme.deliveredGBps), nvmePorts);
+
+  const hddLanes = el("div", "flow-lanes hdd");
+  hddLanes.append(
+    flowLane("to-client", "Egress", f.hddComputeReadGBps, "#e4c39a"),
+    flowLane("to-tier", "Ingress", f.hddComputeWriteGBps, "#c4894a"),
+  );
+
+  const hdd = el("article", "flow-tier hdd");
+  const hddPorts = el("div", "ports");
+  hddPorts.append(
+    flowPort("Egress", bw(f.hddComputeReadGBps), readStreams + " read streams"),
+    flowPort("Ingress", bw(f.hddComputeWriteGBps), writeStreams + " write streams"),
+  );
+  hdd.append(
+    el("h4", "", "HDD"),
+    flowMeter(f.hddDemandGBps, r.hdd.deliveredGBps),
+    el("p", "flow-cap", "Capacity reserve " + pb(f.reserveEB * 1000)),
+    hddPorts,
+  );
+
+  const tapeLabelOut = f.repack ? "Archive + repack" : "Archive";
+  const tapeLabelIn = f.repack ? "Recall + repack" : "Recall";
+  const tapeLanes = el("div", "flow-lanes tape");
+  tapeLanes.append(
+    flowLane("to-tier", tapeLabelOut, archiveOut, "#8f5e34"),
+    flowLane("to-client", tapeLabelIn, recallIn, "#d4a574"),
+  );
+
+  const tape = el("article", "flow-tier tape");
+  tape.append(
+    el("h4", "", "Tape"),
+    flowMeter(f.tapeDemandGBps, r.tape.bandwidthGBps),
+    el("p", "flow-cap", f.repack ? "Repack reads and rewrites the library." : "Archive down, recall up."),
+  );
+
+  const board = el("div", "flow-board");
+  board.append(clients, nvmeLanes, nvme, hddLanes, hdd, tapeLanes, tape);
+  host.replaceChildren(board);
 }
 
 function renderSummary(r) {
@@ -392,6 +526,7 @@ function renderStack(r) {
       ["Read", bw(r.flow.computeReadGBps)],
       ["Write", bw(r.flow.computeWriteGBps)],
       ["NVMe hit", pct(r.flow.nvmeHitRate)],
+      ["Read-through", pct(r.flow.nvmeThroughFraction || 0)],
       ["Working set", pb(r.flow.workingSetPB)],
     ]),
     el("div", "flow", "Reads"),
@@ -400,6 +535,7 @@ function renderStack(r) {
       [r.hybrid ? "Shared network" : "Network", bw(r.nvme.networkGBps)],
       ["Drive BW", bw(r.nvme.driveAggregateGBps)],
       ["Served", bw(r.flow.nvmeServedGBps)],
+      ["Read-through", bw(r.flow.nvmeThroughGBps || 0)],
       ["IOPS", iops(r.nvme.aggregateIOPS)],
       ["Files/s", filesRate(r.summary.nvmeFilesPerSec)],
       ["Limit", sentence(r.nvme.limit)],

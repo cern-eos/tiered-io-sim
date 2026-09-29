@@ -97,6 +97,8 @@ func TestDefaultScenario(t *testing.T) {
 	near(t, r.Summary.HDDFilesPerSec, r.Summary.HDDReadFilesPerSec+r.Summary.HDDWriteFilesPerSec, 1e-9, "hdd files")
 	near(t, r.HDD.Degradation, 1-r.HDD.Efficiency, 1e-9, "degradation")
 	near(t, r.Flow.ArchiveGBps, 1e9/float64(SecondsPerYear), 1e-9, "archive")
+	near(t, r.Flow.NVMeThroughFraction, 0.10, 1e-12, "through fraction")
+	near(t, r.Flow.NVMeThroughGBps, 0.10*r.Flow.HDDComputeReadGBps, 1e-6, "through")
 	near(t, r.Bounds.ObservedMinEB, 1.1485, 5e-4, "obs min")
 	near(t, r.Bounds.HardwareMinEB, 1, 1e-9, "hw min")
 	if !r.Knee.HardwareOK || r.Knee.HardwareTargetEB != 1 {
@@ -335,6 +337,36 @@ func TestRepackReadsAndRewritesArchive(t *testing.T) {
 	near(t, r.Flow.HDDRepackReadGBps, each, 1e-9, "replica read")
 	near(t, r.Flow.HDDRepackWriteGBps, each*2, 1e-9, "replica write")
 	near(t, r.Flow.TapeDemandGBps, r.Flow.ArchiveGBps+r.Flow.RecallGBps+2*each, 1e-9, "tape stays logical")
+}
+
+func TestNVMeReadThrough(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Workload.NVMeThroughFraction = 0
+	off := Evaluate(cfg)
+	if off.Flow.NVMeThroughGBps != 0 {
+		t.Fatalf("through %g", off.Flow.NVMeThroughGBps)
+	}
+
+	on := Evaluate(DefaultConfig())
+	if on.Flow.HDDDemandGBps != off.Flow.HDDDemandGBps {
+		t.Fatalf("read-through changed hdd demand: %g vs %g", on.Flow.HDDDemandGBps, off.Flow.HDDDemandGBps)
+	}
+
+	cfg.Workload.NVMeThroughFraction = 1
+	r := Evaluate(cfg)
+	near(t, r.Flow.NVMeThroughGBps, r.Flow.HDDComputeReadGBps, 1e-6, "all reads through")
+	if r.Flow.NVMeThroughGBps > r.NVMe.DeliveredGBps+1e-6 {
+		t.Fatalf("through %g exceeds nvme %g", r.Flow.NVMeThroughGBps, r.NVMe.DeliveredGBps)
+	}
+
+	cfg.Workload.NVMeHitRate = 1
+	cfg.Workload.ComputeReadGBps = 3000
+	r = Evaluate(cfg)
+	near(t, r.Flow.NVMeServedGBps, r.NVMe.DeliveredGBps, 1e-6, "nvme full")
+	near(t, r.Flow.NVMeThroughGBps, 0, 1e-6, "no room for through")
+	if !strings.Contains(strings.Join(on.Formula.Lines, " "), "pass through the NVMe cache") {
+		t.Fatalf("formula %v", on.Formula.Lines)
+	}
 }
 
 func TestSanitizeNegative(t *testing.T) {

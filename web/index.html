@@ -204,6 +204,11 @@
             <span class="hint">Share of compute reads attempted from NVMe before HDD.</span>
           </label>
           <label class="field">
+            <span class="k">NVMe read-through (%)</span>
+            <input id="nvme-through" type="number" min="0" max="100" step="1" inputmode="decimal">
+            <span class="hint">Share of HDD client-read traffic that also passes through the NVMe cache. The disks still perform the read.</span>
+          </label>
+          <label class="field">
             <span class="k">Prefetch horizon (h)</span>
             <input id="prefetch-hours" type="number" min="0" step="1" inputmode="decimal">
           </label>
@@ -334,6 +339,12 @@
         <h3>Summary</h3>
         <div id="summary"></div>
         <p class="hint">Usable bandwidth is delivered NVMe bandwidth plus delivered HDD bandwidth. Each is the minimum of drive bandwidth and that tier’s network. The HDD figure is one pipe: a read and a write do not run together. On a hybrid layout the shared network caps the sum. Usable HDD IOPS are that pipe divided by the segment size, plus rated NVMe IOPS. Tape is not included. Files per second use the configured file size. Capacity is NVMe plus HDD plus the tape library.</p>
+      </div>
+
+      <div class="card flow-card" id="panel-flow">
+        <h3>Data flow</h3>
+        <p class="hint">Clients read from NVMe on a hit and from HDD on a miss. The read-through share of those HDD reads also passes through the NVMe cache, while the disks still perform them. Writes enter the HDD tier. Archive moves from HDD to tape and recall moves back. Each bar is bandwidth in use against what that tier can deliver; the pale remainder is reserve.</p>
+        <div id="flow-anim"></div>
       </div>
     </section>
 

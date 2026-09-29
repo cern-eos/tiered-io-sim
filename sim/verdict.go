@@ -12,6 +12,9 @@ func buildVerdict(r Result) Verdict {
 	if r.Flow.NVMeHitRate > 0 {
 		v.Lines = append(v.Lines, nvmeLine(r))
 	}
+	if r.Flow.NVMeThroughGBps > 0 {
+		v.Lines = append(v.Lines, throughLine(r.Flow))
+	}
 	v.Lines = append(v.Lines, minimumLine(r))
 	return v
 }

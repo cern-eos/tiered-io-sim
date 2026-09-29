@@ -334,7 +334,7 @@ input:focus-visible, button:focus-visible {
   margin-top: 16px;
 }
 
-.results .sweep, .results .cost, .results .summary { grid-column: 1 / -1; }
+.results .sweep, .results .cost, .results .summary, .results .flow-card { grid-column: 1 / -1; }
 
 .summary-grid {
   display: grid;
@@ -604,6 +604,179 @@ td.neg { color: var(--over); }
   color: var(--muted);
 }
 
+.flow-board {
+  display: grid;
+  grid-template-columns: minmax(132px, 160px) minmax(132px, 168px) minmax(0, 1fr) minmax(132px, 168px) minmax(156px, 200px);
+  grid-template-areas:
+    "clients nvme-lane nvme nvme nvme"
+    "clients hdd-lane hdd tape-lane tape";
+  gap: 14px 12px;
+  align-items: stretch;
+}
+
+.flow-clients,
+.flow-tier {
+  background: var(--well);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px 12px 10px;
+  min-width: 0;
+}
+
+.flow-clients { grid-area: clients; display: flex; flex-direction: column; justify-content: center; }
+.flow-tier.nvme { grid-area: nvme; box-shadow: inset 0 3px 0 var(--nvme); }
+.flow-tier.hdd { grid-area: hdd; box-shadow: inset 0 3px 0 var(--hdd); }
+.flow-tier.tape { grid-area: tape; box-shadow: inset 0 3px 0 var(--tape); }
+.flow-lanes.nvme { grid-area: nvme-lane; }
+.flow-lanes.hdd { grid-area: hdd-lane; }
+.flow-lanes.tape { grid-area: tape-lane; }
+
+.flow-clients h4,
+.flow-tier h4 {
+  margin: 0 0 8px;
+  font-family: var(--serif);
+  font-size: 22px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+}
+
+.flow-tier.nvme h4 { color: var(--nvme); }
+.flow-tier.hdd h4 { color: var(--hdd); }
+.flow-tier.tape h4 { color: var(--tape); }
+
+.flow-clients p,
+.flow-cap {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.flow-clients p + p { margin-top: 4px; }
+.flow-cap { margin-top: 6px; }
+
+.flow-meter { margin: 8px 0 10px; }
+.flow-bar {
+  display: flex;
+  height: 10px;
+  border-radius: 99px;
+  overflow: hidden;
+  background: #2c2c30;
+}
+.flow-bar .used { background: var(--flow, var(--hdd)); }
+.flow-bar .reserve { background: repeating-linear-gradient(90deg, #3a342c 0 6px, #2a261f 6px 10px); }
+.flow-tier.nvme { --flow: var(--nvme); }
+.flow-tier.hdd { --flow: var(--hdd); }
+.flow-tier.tape { --flow: var(--tape); }
+.flow-bar.over { box-shadow: inset 0 0 0 1px var(--over); }
+.flow-meter p {
+  margin: 6px 0 0;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--faint);
+}
+
+.ports {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.port {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px 8px;
+  min-width: 0;
+}
+
+.port .k {
+  display: block;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+.port b {
+  display: block;
+  margin-top: 2px;
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--ink);
+}
+
+.port .note {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.3;
+}
+
+.flow-lanes {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.lane { min-width: 0; }
+.lane-top {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  margin-bottom: 4px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.lane-v {
+  font-family: var(--mono);
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.track {
+  position: relative;
+  height: 8px;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.05);
+  overflow: hidden;
+}
+
+.track i {
+  position: absolute;
+  top: 0;
+  width: 18px;
+  height: 8px;
+  border-radius: 99px;
+  background: linear-gradient(90deg, transparent, var(--flow-color, var(--nvme)));
+  animation: flow-right linear infinite;
+}
+
+.lane.to-client .track i {
+  background: linear-gradient(270deg, transparent, var(--flow-color, var(--nvme)));
+  animation-name: flow-left;
+}
+
+.track.idle { opacity: 0.35; }
+
+@keyframes flow-right {
+  from { left: -20px; }
+  to { left: 100%; }
+}
+
+@keyframes flow-left {
+  from { left: 100%; }
+  to { left: -20px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .track i { animation: none; left: 40%; opacity: 0.85; }
+}
+
 .footnote { margin-top: 22px; }
 
 @media (max-width: 1280px) {
@@ -612,7 +785,18 @@ td.neg { color: var(--over); }
 
 @media (max-width: 980px) {
   .tier-grid, .results, .scenario .fields, .mins, #cost-tiers, .summary-grid { grid-template-columns: 1fr; }
-  .results .sweep, .results .cost, .results .summary { grid-column: auto; }
+  .results .sweep, .results .cost, .results .summary, .results .flow-card { grid-column: auto; }
+  .flow-board {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "clients"
+      "nvme-lane"
+      "nvme"
+      "hdd-lane"
+      "hdd"
+      "tape-lane"
+      "tape";
+  }
   h1 { font-size: 30px; }
 }
 
