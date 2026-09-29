@@ -99,9 +99,12 @@ type Workload struct {
 	ComputeReadGBps  float64 `json:"computeReadGBps"`
 	ComputeWriteGBps float64 `json:"computeWriteGBps"`
 	NVMeHitRate      float64 `json:"nvmeHitRate"`
-	// NVMeThroughFraction is the share of HDD client-read traffic that also
-	// passes through the NVMe cache. The disks still perform the read.
-	NVMeThroughFraction  float64 `json:"nvmeThroughFraction"`
+	// NVMeThroughFraction is the share of HDD client-read traffic staged
+	// into the NVMe cache. The disks still perform that read.
+	NVMeThroughFraction float64 `json:"nvmeThroughFraction"`
+	// NVMeRereadFactor is how many times each staged byte is read from NVMe.
+	// Egress is the staged rate times this factor, plus cache hits.
+	NVMeRereadFactor     float64 `json:"nvmeRereadFactor"`
 	WorkingSetPB         float64 `json:"workingSetPB"`
 	ReserveFraction      float64 `json:"reserveFraction"`
 	ArchiveEBPerYear     float64 `json:"archiveEBPerYear"`
@@ -210,6 +213,7 @@ func DefaultConfig() Config {
 			ComputeWriteGBps:     100,
 			NVMeHitRate:          0,
 			NVMeThroughFraction:  0.10,
+			NVMeRereadFactor:     3,
 			WorkingSetPB:         900,
 			ReserveFraction:      0.10,
 			ArchiveEBPerYear:     1,
@@ -293,6 +297,7 @@ type Flow struct {
 	ComputeWriteGBps     float64 `json:"computeWriteGBps"`
 	NVMeHitRate          float64 `json:"nvmeHitRate"`
 	NVMeThroughFraction  float64 `json:"nvmeThroughFraction"`
+	NVMeRereadFactor     float64 `json:"nvmeRereadFactor"`
 	PrefetchHours        float64 `json:"prefetchHours"`
 	ArchiveGBps          float64 `json:"archiveGBps"`
 	ArchiveFraction      float64 `json:"archiveFraction"`
@@ -308,6 +313,7 @@ type Flow struct {
 	NVMeHitDemandGBps    float64 `json:"nvmeHitDemandGBps"`
 	NVMeServedGBps       float64 `json:"nvmeServedGBps"`
 	NVMeThroughGBps      float64 `json:"nvmeThroughGBps"`
+	NVMeEgressGBps       float64 `json:"nvmeEgressGBps"`
 	Layout               string  `json:"layout"`
 	LayoutName           string  `json:"layoutName"`
 	LayoutNote           string  `json:"layoutNote"`
@@ -870,8 +876,20 @@ func evalFlow(wl Workload, layout string, repack bool, nvme TierStats, hdd HDDSt
 		remain = 0
 	}
 	through := hddReadTraffic * wl.NVMeThroughFraction
-	if through > remain {
+	factor := wl.NVMeRereadFactor
+	if factor < 0 || math.IsNaN(factor) {
+		factor = 0
+	}
+	if factor > 0 {
+		if through*factor > remain {
+			through = remain / factor
+		}
+	} else if through > remain {
 		through = remain
+	}
+	egress := served + through*factor
+	if egress > nvme.DeliveredGBps {
+		egress = nvme.DeliveredGBps
 	}
 	demand := hddReadTraffic + hddWriteTraffic + archiveTraffic + recallTraffic + hddRepackRead + hddRepackWrite
 	tapeDemand := archive + recall + 2*repackEach
@@ -907,6 +925,7 @@ func evalFlow(wl Workload, layout string, repack bool, nvme TierStats, hdd HDDSt
 		ComputeWriteGBps:     wl.ComputeWriteGBps,
 		NVMeHitRate:          wl.NVMeHitRate,
 		NVMeThroughFraction:  wl.NVMeThroughFraction,
+		NVMeRereadFactor:     factor,
 		PrefetchHours:        wl.PrefetchHorizonHours,
 		ArchiveGBps:          archive,
 		ArchiveFraction:      archFrac,
@@ -927,6 +946,7 @@ func evalFlow(wl Workload, layout string, repack bool, nvme TierStats, hdd HDDSt
 		NVMeHitDemandGBps:    hitDemand,
 		NVMeServedGBps:       served,
 		NVMeThroughGBps:      through,
+		NVMeEgressGBps:       egress,
 		HDDComputeReadGBps:   hddReadTraffic,
 		HDDComputeWriteGBps:  hddWriteTraffic,
 		HDDArchiveGBps:       archiveTraffic,
@@ -1085,8 +1105,9 @@ func repackLine(capacityEB float64, flow Flow) string {
 }
 
 func throughLine(flow Flow) string {
-	return fmtPct(flow.NVMeThroughFraction) + " of HDD client reads also pass through the NVMe cache, " +
-		fmtBW(flow.NVMeThroughGBps) + ". The disks still perform that read."
+	return fmtPct(flow.NVMeThroughFraction) + " of HDD client reads are staged into NVMe at " +
+		fmtBW(flow.NVMeThroughGBps) + ". A re-read factor of " + fmtNum(flow.NVMeRereadFactor) +
+		" raises NVMe egress to " + fmtBW(flow.NVMeEgressGBps) + ". The disks still perform the staged read."
 }
 
 func layoutStreamLine(hdd HDDStats) string {
@@ -1364,6 +1385,10 @@ func sanitize(cfg *Config) []string {
 	if cfg.Workload.NVMeThroughFraction < 0 || cfg.Workload.NVMeThroughFraction > 1 || math.IsNaN(cfg.Workload.NVMeThroughFraction) {
 		w = append(w, "NVMe read-through was outside 0–100% and was clamped.")
 		cfg.Workload.NVMeThroughFraction = clamp01(cfg.Workload.NVMeThroughFraction)
+	}
+	if cfg.Workload.NVMeRereadFactor < 0 || math.IsNaN(cfg.Workload.NVMeRereadFactor) {
+		w = append(w, "NVMe re-read factor was negative and was treated as zero.")
+		cfg.Workload.NVMeRereadFactor = 0
 	}
 	if cfg.Workload.ReserveFraction < 0 || math.IsNaN(cfg.Workload.ReserveFraction) {
 		w = append(w, "Reserve fraction was invalid and was treated as zero.")

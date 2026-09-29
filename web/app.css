@@ -609,6 +609,7 @@ td.neg { color: var(--over); }
   grid-template-columns: minmax(132px, 160px) minmax(132px, 168px) minmax(0, 1fr) minmax(132px, 168px) minmax(156px, 200px);
   grid-template-areas:
     "clients nvme-lane nvme nvme nvme"
+    "clients . stage stage stage"
     "clients hdd-lane hdd tape-lane tape";
   gap: 14px 12px;
   align-items: stretch;
@@ -628,6 +629,7 @@ td.neg { color: var(--over); }
 .flow-tier.hdd { grid-area: hdd; box-shadow: inset 0 3px 0 var(--hdd); }
 .flow-tier.tape { grid-area: tape; box-shadow: inset 0 3px 0 var(--tape); }
 .flow-lanes.nvme { grid-area: nvme-lane; }
+.flow-rise { grid-area: stage; }
 .flow-lanes.hdd { grid-area: hdd-lane; }
 .flow-lanes.tape { grid-area: tape-lane; }
 
@@ -761,7 +763,54 @@ td.neg { color: var(--over); }
   animation-name: flow-left;
 }
 
-.track.idle { opacity: 0.35; }
+.track.idle, .vtrack.idle { opacity: 0.35; }
+
+.flow-rise {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
+}
+
+.vtrack {
+  position: relative;
+  width: 10px;
+  height: 48px;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.05);
+  overflow: hidden;
+  flex: none;
+}
+
+.vtrack i {
+  position: absolute;
+  left: 0;
+  width: 10px;
+  height: 16px;
+  border-radius: 99px;
+  background: linear-gradient(0deg, transparent, #e4c39a);
+  animation: flow-up linear infinite;
+}
+
+.flow-rise-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.flow-rise-text b {
+  font-family: var(--mono);
+  font-weight: 550;
+  font-size: 12px;
+  color: var(--ink);
+}
+
+@keyframes flow-up {
+  from { top: 100%; }
+  to { top: -16px; }
+}
 
 @keyframes flow-right {
   from { left: -20px; }
@@ -775,6 +824,7 @@ td.neg { color: var(--over); }
 
 @media (prefers-reduced-motion: reduce) {
   .track i { animation: none; left: 40%; opacity: 0.85; }
+  .vtrack i { animation: none; top: 30%; opacity: 0.85; }
 }
 
 .footnote { margin-top: 22px; }
@@ -792,6 +842,7 @@ td.neg { color: var(--over); }
       "clients"
       "nvme-lane"
       "nvme"
+      "stage"
       "hdd-lane"
       "hdd"
       "tape-lane"

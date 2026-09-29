@@ -166,6 +166,7 @@ function fill(cfg) {
   setNum("compute-write", cfg.workload.computeWriteGBps, 4);
   setNum("nvme-hit", cfg.workload.nvmeHitRate * 100, 4);
   setNum("nvme-through", (cfg.workload.nvmeThroughFraction || 0) * 100, 4);
+  setNum("nvme-reread", cfg.workload.nvmeRereadFactor || 0, 4);
   setNum("working-set", cfg.workload.workingSetPB, 4);
   setNum("reserve-pct", cfg.workload.reserveFraction * 100, 4);
   setNum("archive-eb", cfg.workload.archiveEBPerYear, 4);
@@ -194,7 +195,7 @@ function readConfig() {
     "hdd-nodes", "hdd-drives", "hdd-size", "hdd-bw-mb", "hdd-iops",
     "read-streams", "write-streams", "segment-mb", "seek-ms",
     "tape-drives", "tape-bw-mb", "tape-capacity",
-    "file-size", "compute-read", "compute-write", "nvme-hit", "nvme-through", "prefetch-hours",
+    "file-size", "compute-read", "compute-write", "nvme-hit", "nvme-through", "nvme-reread", "prefetch-hours",
     "working-set", "reserve-pct", "baseline-eb", "observed-scale",
     "archive-eb", "recall",
     "price-node", "price-nvme", "price-hdd", "price-tape-drive", "price-tape",
@@ -244,6 +245,7 @@ function readConfig() {
       computeWriteGBps: v["compute-write"],
       nvmeHitRate: v["nvme-hit"] / 100,
       nvmeThroughFraction: v["nvme-through"] / 100,
+      nvmeRereadFactor: v["nvme-reread"],
       workingSetPB: v["working-set"],
       reserveFraction: v["reserve-pct"] / 100,
       archiveEBPerYear: v["archive-eb"],
@@ -389,23 +391,35 @@ function renderFlow(r) {
     el("p", "", "Write " + bw(f.computeWriteGBps)),
     el("p", "", "NVMe hit " + pct(f.nvmeHitRate)),
     el("p", "", "Read-through " + pct(f.nvmeThroughFraction || 0)),
+    el("p", "", "Re-read ×" + trim(f.nvmeRereadFactor || 0, 2)),
   );
 
   const through = f.nvmeThroughGBps || 0;
-  const nvmeEgress = f.nvmeServedGBps + through;
+  const nvmeEgress = f.nvmeEgressGBps || 0;
   const nvmeLanes = el("div", "flow-lanes nvme");
-  nvmeLanes.append(
-    flowLane("to-client", "Egress", nvmeEgress, "#e4c39a"),
-    flowLane("to-client", "Through", through, "#c4894a"),
-  );
+  nvmeLanes.append(flowLane("to-client", "Egress", nvmeEgress, "#e4c39a"));
 
   const nvme = el("article", "flow-tier nvme");
   const nvmePorts = el("div", "ports");
   nvmePorts.append(
-    flowPort("Egress", bw(nvmeEgress), "hits and read-through to clients"),
-    flowPort("Ingress", bw(through), "HDD reads passing through"),
+    flowPort("Egress", bw(nvmeEgress), "re-read ×" + trim(f.nvmeRereadFactor || 0, 2) + " plus hits"),
+    flowPort("Ingress", bw(through), "staged from HDD"),
   );
   nvme.append(el("h4", "", "NVMe"), flowMeter(nvmeEgress, r.nvme.deliveredGBps), nvmePorts);
+
+  const rise = el("div", "flow-rise");
+  const vtrack = el("div", "vtrack" + (through > 0 ? "" : " idle"));
+  const n = flowDots(through);
+  const dur = flowDur(through);
+  for (let i = 0; i < n; i++) {
+    const dot = document.createElement("i");
+    dot.style.animationDuration = dur + "s";
+    dot.style.animationDelay = (-dur * i / n).toFixed(2) + "s";
+    vtrack.append(dot);
+  }
+  const riseText = el("div", "flow-rise-text");
+  riseText.append(el("span", "", "HDD → NVMe"), el("b", "", bw(through) + " staged"));
+  rise.append(vtrack, riseText);
 
   const hddLanes = el("div", "flow-lanes hdd");
   hddLanes.append(
@@ -442,7 +456,7 @@ function renderFlow(r) {
   );
 
   const board = el("div", "flow-board");
-  board.append(clients, nvmeLanes, nvme, hddLanes, hdd, tapeLanes, tape);
+  board.append(clients, nvmeLanes, nvme, rise, hddLanes, hdd, tapeLanes, tape);
   host.replaceChildren(board);
 }
 
@@ -527,6 +541,7 @@ function renderStack(r) {
       ["Write", bw(r.flow.computeWriteGBps)],
       ["NVMe hit", pct(r.flow.nvmeHitRate)],
       ["Read-through", pct(r.flow.nvmeThroughFraction || 0)],
+      ["Re-read", "×" + trim(r.flow.nvmeRereadFactor || 0, 2)],
       ["Working set", pb(r.flow.workingSetPB)],
     ]),
     el("div", "flow", "Reads"),
@@ -535,7 +550,8 @@ function renderStack(r) {
       [r.hybrid ? "Shared network" : "Network", bw(r.nvme.networkGBps)],
       ["Drive BW", bw(r.nvme.driveAggregateGBps)],
       ["Served", bw(r.flow.nvmeServedGBps)],
-      ["Read-through", bw(r.flow.nvmeThroughGBps || 0)],
+      ["Staged", bw(r.flow.nvmeThroughGBps || 0)],
+      ["Egress", bw(r.flow.nvmeEgressGBps || 0)],
       ["IOPS", iops(r.nvme.aggregateIOPS)],
       ["Files/s", filesRate(r.summary.nvmeFilesPerSec)],
       ["Limit", sentence(r.nvme.limit)],

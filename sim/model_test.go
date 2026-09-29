@@ -99,6 +99,8 @@ func TestDefaultScenario(t *testing.T) {
 	near(t, r.Flow.ArchiveGBps, 1e9/float64(SecondsPerYear), 1e-9, "archive")
 	near(t, r.Flow.NVMeThroughFraction, 0.10, 1e-12, "through fraction")
 	near(t, r.Flow.NVMeThroughGBps, 0.10*r.Flow.HDDComputeReadGBps, 1e-6, "through")
+	near(t, r.Flow.NVMeRereadFactor, 3, 1e-12, "reread")
+	near(t, r.Flow.NVMeEgressGBps, 3*r.Flow.NVMeThroughGBps, 1e-6, "nvme egress")
 	near(t, r.Bounds.ObservedMinEB, 1.1485, 5e-4, "obs min")
 	near(t, r.Bounds.HardwareMinEB, 1, 1e-9, "hw min")
 	if !r.Knee.HardwareOK || r.Knee.HardwareTargetEB != 1 {
@@ -354,17 +356,15 @@ func TestNVMeReadThrough(t *testing.T) {
 
 	cfg.Workload.NVMeThroughFraction = 1
 	r := Evaluate(cfg)
-	near(t, r.Flow.NVMeThroughGBps, r.Flow.HDDComputeReadGBps, 1e-6, "all reads through")
-	if r.Flow.NVMeThroughGBps > r.NVMe.DeliveredGBps+1e-6 {
-		t.Fatalf("through %g exceeds nvme %g", r.Flow.NVMeThroughGBps, r.NVMe.DeliveredGBps)
-	}
+	near(t, r.Flow.NVMeEgressGBps, r.NVMe.DeliveredGBps, 1e-6, "egress fills nvme")
+	near(t, r.Flow.NVMeThroughGBps, r.NVMe.DeliveredGBps/3, 1e-6, "stage clipped by reread")
 
 	cfg.Workload.NVMeHitRate = 1
 	cfg.Workload.ComputeReadGBps = 3000
 	r = Evaluate(cfg)
 	near(t, r.Flow.NVMeServedGBps, r.NVMe.DeliveredGBps, 1e-6, "nvme full")
 	near(t, r.Flow.NVMeThroughGBps, 0, 1e-6, "no room for through")
-	if !strings.Contains(strings.Join(on.Formula.Lines, " "), "pass through the NVMe cache") {
+	if !strings.Contains(strings.Join(on.Formula.Lines, " "), "staged into NVMe") {
 		t.Fatalf("formula %v", on.Formula.Lines)
 	}
 }
