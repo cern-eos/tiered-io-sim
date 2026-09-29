@@ -18,7 +18,7 @@ var webFS embed.FS
 var pageTpl = template.Must(template.ParseFS(webFS, "web/index.html"))
 
 func main() {
-	addr := flag.String("addr", "127.0.0.1:8080", "listen address")
+	addr := flag.String("addr", "127.0.0.1:8090", "listen address")
 	flag.Parse()
 	srv := &http.Server{
 		Addr:              *addr,
