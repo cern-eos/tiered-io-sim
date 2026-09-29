@@ -186,7 +186,7 @@ func DefaultConfig() Config {
 		},
 		HDD: NodeTier{
 			Nodes: 833, NetworkGbps: 100, DrivesPerNode: 90,
-			DriveSizeTB: 20, DriveBWGBps: 0.28, DriveIOPS: 140,
+			DriveSizeTB: 20, DriveBWGBps: 0.27, DriveIOPS: 300,
 		},
 		Tape: TapeTier{Drives: 750, DriveBWGBps: 0.4, CapacityEB: 4},
 		Stream: Stream{
@@ -221,7 +221,7 @@ func DefaultConfig() Config {
 			HDDDriveW:  8,
 			TapeDriveW: 30,
 		},
-		Layout: LayoutReplica,
+		Layout: LayoutEC10p2,
 	}
 }
 
@@ -1259,12 +1259,12 @@ func sanitize(cfg *Config) []string {
 	cfg.Power.HDDDriveW = nonnegF("HDD power", cfg.Power.HDDDriveW, &w)
 	cfg.Power.TapeDriveW = nonnegF("Tape drive power", cfg.Power.TapeDriveW, &w)
 	switch cfg.Layout {
-	case "", LayoutReplica:
-		cfg.Layout = LayoutReplica
-	case LayoutEC10p2:
+	case "", LayoutEC10p2:
+		cfg.Layout = LayoutEC10p2
+	case LayoutReplica:
 	default:
-		w = append(w, "HDD layout was unrecognized and was treated as 2 replica.")
-		cfg.Layout = LayoutReplica
+		w = append(w, "HDD layout was unrecognized and was treated as 10+2 erasure coding.")
+		cfg.Layout = LayoutEC10p2
 	}
 	if cfg.Workload.NVMeHitRate < 0 || cfg.Workload.NVMeHitRate > 1 || math.IsNaN(cfg.Workload.NVMeHitRate) {
 		w = append(w, "NVMe hit rate was outside 0–100% and was clamped.")

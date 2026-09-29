@@ -62,13 +62,21 @@ func TestDefaultScenario(t *testing.T) {
 	near(t, r.HDD.CapacityEB, 1.4994, 1e-9, "hdd eb")
 	near(t, float64(r.HDD.Drives), 74970, 0, "drives")
 	near(t, r.HDD.NetworkGBps, 10412.5, 1e-9, "net")
-	near(t, r.HDD.DeliveredGBps, 7594.645, 1e-2, "delivered")
-	near(t, r.HDD.StreamsPerDrive, 10, 1e-9, "streams per drive")
-	near(t, r.HDD.WriteStreams, 2*149940, 1e-6, "disk writes")
-	near(t, r.HDD.ReadDeliveredGBps, 0.6*r.HDD.DeliveredGBps, 1e-6, "read share")
-	near(t, r.Flow.WriteVolume, 2, 1e-12, "write volume")
-	near(t, r.Flow.HDDComputeWriteGBps, 200, 1e-9, "write traffic")
-	near(t, r.Flow.HDDRecallGBps, 200, 1e-9, "recall traffic")
+	if r.Flow.Layout != LayoutEC10p2 {
+		t.Fatalf("layout %s", r.Flow.Layout)
+	}
+	if r.HDD.DriveAggregateGBps != float64(r.HDD.Drives)*0.27 {
+		t.Fatalf("sequential aggregate %g", r.HDD.DriveAggregateGBps)
+	}
+	near(t, r.HDD.AggregateIOPS, 74970*300, 1e-6, "rated iops")
+	near(t, r.HDD.DeliveredGBps, float64(74970)*DriveStreamGBps(30, 0.001, 0.27, 0.007), 1e-3, "delivered")
+	near(t, r.HDD.StreamsPerDrive, 30, 1e-9, "streams per drive")
+	near(t, r.HDD.WriteStreams, 12*149940, 1e-6, "disk writes")
+	near(t, r.HDD.ReadDeliveredGBps, 0.2*r.HDD.DeliveredGBps, 1e-6, "read share")
+	near(t, r.Flow.ReadVolume, 0.9, 1e-12, "read volume")
+	near(t, r.Flow.WriteVolume, 1.1, 1e-12, "write volume")
+	near(t, r.Flow.HDDComputeWriteGBps, 110, 1e-9, "write traffic")
+	near(t, r.Flow.HDDRecallGBps, 110, 1e-9, "recall traffic")
 	near(t, r.HDD.DeliveredIOPS, r.HDD.DeliveredGBps/0.001, 1, "hdd iops")
 	near(t, r.Summary.TotalIOPS, 480*1e6+r.HDD.DeliveredIOPS, 1, "total iops")
 	near(t, r.Summary.CostCHF, r.Cost.TotalCHF, 1e-6, "summary cost")
@@ -76,30 +84,30 @@ func TestDefaultScenario(t *testing.T) {
 	near(t, r.Summary.FileSizeGB, 10, 1e-12, "file size")
 	near(t, r.Summary.NVMeFilesPerSec, 2400/10, 1e-9, "nvme files")
 	near(t, r.Summary.TapeFilesPerSec, 300/10, 1e-9, "tape files")
-	near(t, r.Summary.HDDReadFilesPerSec, r.HDD.ReadDeliveredGBps/10, 1e-6, "hdd read files")
-	near(t, r.Summary.HDDWriteFilesPerSec, r.HDD.WriteDeliveredGBps/(10*2), 1e-6, "hdd write files")
+	near(t, r.Summary.HDDReadFilesPerSec, r.HDD.ReadDeliveredGBps/(10*0.9), 1e-6, "hdd read files")
+	near(t, r.Summary.HDDWriteFilesPerSec, r.HDD.WriteDeliveredGBps/(10*1.1), 1e-6, "hdd write files")
 	near(t, r.Summary.HDDFilesPerSec, r.Summary.HDDReadFilesPerSec+r.Summary.HDDWriteFilesPerSec, 1e-9, "hdd files")
 	near(t, r.HDD.Degradation, 1-r.HDD.Efficiency, 1e-9, "degradation")
 	near(t, r.Flow.ArchiveGBps, 1e9/float64(SecondsPerYear), 1e-9, "archive")
-	near(t, r.Bounds.ObservedMinEB, 1.4317, 5e-4, "obs min")
+	near(t, r.Bounds.ObservedMinEB, 1.1485, 5e-4, "obs min")
 	near(t, r.Bounds.HardwareMinEB, 1, 1e-9, "hw min")
 	if !r.Knee.HardwareOK || r.Knee.HardwareTargetEB != 1 {
 		t.Fatalf("hardware knee %+v", r.Knee)
 	}
-	if !r.Knee.ObservedOK || r.Knee.ObservedTargetEB != 1.5 {
+	if !r.Knee.ObservedOK || r.Knee.ObservedTargetEB != 1.25 {
 		t.Fatalf("observed knee %+v", r.Knee)
 	}
-	if r.Verdict.Tone != "tight" || r.Verdict.Title != "Thin margin" {
+	if r.Verdict.Tone != "ok" || r.Verdict.Title != "Within budget" {
 		t.Fatalf("verdict %+v", r.Verdict)
 	}
 	text := strings.Join(r.Verdict.Lines, " ")
-	for _, phrase := range []string{"1.5 EB", "40%", "7.59 TB/s", "10.6%", "1.43 EB", "1 EB", "5.07 TB/s per EB", "seek contention"} {
+	for _, phrase := range []string{"1.25 EB", "40%", "7.16 TB/s", "10.6%", "1.15 EB", "1 EB", "4.78 TB/s per EB", "seek contention"} {
 		if !strings.Contains(text, phrase) {
 			t.Fatalf("verdict missing %q\n%s", phrase, text)
 		}
 	}
 	joined := strings.Join(r.Formula.Lines, "\n")
-	for _, phrase := range []string{"94.6 MB/s", "disk write streams", "2 replica"} {
+	for _, phrase := range []string{"93.4 MB/s", "disk write streams", "10+2 erasure coding"} {
 		if !strings.Contains(joined, phrase) {
 			t.Fatalf("formula missing %q\n%s", phrase, joined)
 		}
@@ -146,7 +154,7 @@ func TestHitRateOverflow(t *testing.T) {
 	cfg.Workload.ComputeReadGBps = 3000
 	r := Evaluate(cfg)
 	near(t, r.Flow.NVMeServedGBps, 2400, 1e-6, "served")
-	near(t, r.Flow.HDDComputeReadGBps, 600, 1e-6, "hdd read")
+	near(t, r.Flow.HDDComputeReadGBps, 540, 1e-6, "hdd read")
 }
 
 func TestSmallHDDOversubscribed(t *testing.T) {
@@ -236,7 +244,7 @@ func TestHybridSharesHDDNetwork(t *testing.T) {
 	}
 	near(t, r.NVMe.DeliveredGBps, 10412.5, 1e-6, "nvme on shared net")
 	near(t, r.NVMe.NetworkGBps, r.HDD.NetworkGBps, 1e-9, "same network")
-	near(t, r.HDD.DeliveredGBps, 7594.645, 1e-2, "idle cache leaves hdd")
+	near(t, r.HDD.DeliveredGBps, float64(74970)*DriveStreamGBps(30, 0.001, 0.27, 0.007), 1e-3, "idle cache leaves hdd")
 	if r.HDD.Binding != BindStream {
 		t.Fatalf("hdd binding %s", r.HDD.Binding)
 	}
@@ -252,17 +260,17 @@ func TestHybridSharesHDDNetwork(t *testing.T) {
 	}
 
 	cfg.Workload.NVMeHitRate = 1
-	cfg.Workload.ComputeReadGBps = 3000
+	cfg.Workload.ComputeReadGBps = 5000
 	r = Evaluate(cfg)
-	near(t, r.Flow.NVMeServedGBps, 3000, 1e-6, "served")
-	near(t, r.HDD.DeliveredGBps, 10412.5-3000, 1e-3, "hdd after nvme")
+	near(t, r.Flow.NVMeServedGBps, 5000, 1e-6, "served")
+	near(t, r.HDD.DeliveredGBps, 10412.5-5000, 1e-3, "hdd after nvme")
 	if r.HDD.Binding != BindNetwork {
 		t.Fatalf("hdd binding %s", r.HDD.Binding)
 	}
 	if r.HDD.Limit != "the shared HDD network after NVMe traffic" {
 		t.Fatalf("limit %q", r.HDD.Limit)
 	}
-	if r.Curve[0].NetworkGBps != 10412.5-3000 {
+	if r.Curve[0].NetworkGBps != 10412.5-5000 {
 		t.Fatalf("curve network %g", r.Curve[0].NetworkGBps)
 	}
 }

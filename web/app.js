@@ -143,7 +143,7 @@ function fill(cfg) {
   setNum("nvme-size", cfg.nvme.driveSizeTB, 4);
   setNum("nvme-bw", cfg.nvme.driveBWGBps, 4);
   setNum("nvme-iops", cfg.nvme.driveIOPS, 0);
-  setRadio("hdd-layout", cfg.layout || "replica");
+  setRadio("hdd-layout", cfg.layout || "ec10p2");
   setNum("hdd-nodes", cfg.hdd.nodes, 0);
   setRadio("hdd-net", cfg.hdd.networkGbps);
   setNum("hdd-drives", cfg.hdd.drivesPerNode, 0);
