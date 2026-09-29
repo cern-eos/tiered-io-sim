@@ -26,15 +26,20 @@
     <form id="model" autocomplete="off">
       <section class="tier-grid">
         <article class="card nvme">
-          <p class="kicker">Performance cache</p>
-          <h2>NVMe</h2>
+          <div class="card-head">
+            <div>
+              <p class="kicker">Performance cache</p>
+              <h2>NVMe</h2>
+            </div>
+            <button type="button" id="hybrid" class="hybrid" aria-pressed="false">Hybrid</button>
+          </div>
           <div class="fields">
-            <label class="field">
+            <label class="field" id="nvme-nodes-field">
               <span class="k">Nodes</span>
               <input id="nvme-nodes" type="number" min="0" step="1" inputmode="numeric">
             </label>
             <label class="field">
-              <span class="k">Drives / node</span>
+              <span class="k" id="nvme-drives-k">Drives / node</span>
               <input id="nvme-drives" type="number" min="0" step="1" inputmode="numeric">
             </label>
             <div class="field wide">
@@ -58,7 +63,7 @@
               <input id="nvme-iops" type="number" min="0" step="1000" inputmode="numeric">
             </label>
           </div>
-          <p class="hint">Delivered bandwidth is the minimum of aggregate drive bandwidth and the node line rate.</p>
+          <p class="hint" id="nvme-hint">Delivered bandwidth is the minimum of aggregate drive bandwidth and the node line rate.</p>
           <p class="foot" id="foot-nvme">—</p>
         </article>
 
@@ -240,6 +245,29 @@
         </div>
         <p class="hint">The node price applies to every NVMe and HDD server. Media is raw capacity. Tape drives are priced apart from the cartridge pool.</p>
       </section>
+
+      <section class="card scenario">
+        <h3>Power</h3>
+        <div class="fields">
+          <label class="field">
+            <span class="k">Node (W)</span>
+            <input id="power-node" type="number" min="0" step="10" inputmode="decimal">
+          </label>
+          <label class="field">
+            <span class="k">NVMe drive (W)</span>
+            <input id="power-nvme" type="number" min="0" step="1" inputmode="decimal">
+          </label>
+          <label class="field">
+            <span class="k">HDD (W)</span>
+            <input id="power-hdd" type="number" min="0" step="0.5" inputmode="decimal">
+          </label>
+          <label class="field">
+            <span class="k">Tape drive (W)</span>
+            <input id="power-tape" type="number" min="0" step="1" inputmode="decimal">
+          </label>
+        </div>
+        <p class="hint">Active power. The node figure is the server without its drives. Each drive is charged on its own. Cartridges are not.</p>
+      </section>
     </form>
 
     <section class="results">
@@ -281,7 +309,7 @@
 
       <div class="card sweep" id="panel-sweep">
         <h3>HDD size sweep</h3>
-        <p class="hint">Same drives, network, stream settings, prices, and workload. Only the HDD node count changes, rounded to a whole node. Slack is delivered bandwidth minus compute, archive, and recall. A row stays within budget when the working set fits and slack is positive. NVMe and tape costs stay put; the HDD column is what changes.</p>
+        <p class="hint">Same drives, network, stream settings, prices, power, and workload. Only the HDD node count changes, rounded to a whole node. Slack is delivered bandwidth minus compute, archive, and recall. A row stays within budget when the working set fits and slack is positive. NVMe and tape stay put; the HDD cost and the power column change with the node count.</p>
         <div class="table-scroll" id="sweep"></div>
       </div>
     </section>

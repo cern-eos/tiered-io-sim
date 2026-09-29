@@ -51,6 +51,16 @@ function chf(v) {
   return sign + "CHF " + intish(Math.round(a));
 }
 
+function watts(w) {
+  const n = Number(w);
+  if (!Number.isFinite(n)) return "0 W";
+  const sign = n < 0 ? "-" : "";
+  const a = Math.abs(n);
+  if (a >= 1e6) return sign + trim(a / 1e6, 2) + " MW";
+  if (a >= 1000) return sign + trim(a / 1000, 1) + " kW";
+  return sign + trim(a, 0) + " W";
+}
+
 function hours(h) {
   if (!Number.isFinite(h) || h <= 0) return "—";
   if (h >= 48) return trim(h / 24, 1) + " days";
@@ -139,6 +149,12 @@ function fill(cfg) {
   setNum("price-hdd", prices.hddCHFPerTB, 2);
   setNum("price-tape-drive", prices.tapeDriveCHF, 2);
   setNum("price-tape", prices.tapeCHFPerTB, 2);
+  const power = cfg.power || {};
+  setNum("power-node", power.nodeW, 2);
+  setNum("power-nvme", power.nvmeDriveW, 2);
+  setNum("power-hdd", power.hddDriveW, 2);
+  setNum("power-tape", power.tapeDriveW, 2);
+  setHybrid(Boolean(cfg.hybrid));
 }
 
 function readConfig() {
@@ -151,6 +167,7 @@ function readConfig() {
     "working-set", "reserve-pct", "baseline-eb", "observed-scale",
     "archive-eb", "recall",
     "price-node", "price-nvme", "price-hdd", "price-tape-drive", "price-tape",
+    "power-node", "power-nvme", "power-hdd", "power-tape",
   ];
   const v = {};
   for (const id of ids) {
@@ -208,6 +225,13 @@ function readConfig() {
       tapeDriveCHF: v["price-tape-drive"],
       tapeCHFPerTB: v["price-tape"],
     },
+    power: {
+      nodeW: v["power-node"],
+      nvmeDriveW: v["power-nvme"],
+      hddDriveW: v["power-hdd"],
+      tapeDriveW: v["power-tape"],
+    },
+    hybrid: document.getElementById("hybrid").getAttribute("aria-pressed") === "true",
   };
 }
 
@@ -267,12 +291,16 @@ function renderBanner(r) {
 }
 
 function renderFeet(r) {
+  const nvmeServers = r.hybrid
+    ? `On the HDD nodes · ${intish(r.nvme.drives)} drives · no extra servers`
+    : `${intish(r.nvme.nodes)} nodes · ${intish(r.nvme.drives)} drives`;
+  const nvmeNodes = r.hybrid ? "servers none" : `nodes ${chf(r.cost.nvmeNodesCHF)}`;
   document.getElementById("foot-nvme").textContent =
-    `${intish(r.nvme.nodes)} nodes · ${intish(r.nvme.drives)} drives · ${capTB(r.nvme.capacityTB)} · ${bw(r.nvme.deliveredGBps)} delivered · nodes ${chf(r.cost.nvmeNodesCHF)} · media ${chf(r.cost.nvmeMediaCHF)}`;
+    `${nvmeServers} · ${capTB(r.nvme.capacityTB)} · ${bw(r.nvme.deliveredGBps)} delivered · ${nvmeNodes} · media ${chf(r.cost.nvmeMediaCHF)} · ${watts(r.power.nvmeW)}`;
   document.getElementById("foot-hdd").textContent =
-    `${intish(r.hdd.nodes)} nodes · ${intish(r.hdd.drives)} drives · ${capTB(r.hdd.capacityTB)} · ${bw(r.hdd.deliveredGBps)} delivered · ${sentence(r.hdd.limit)} · nodes ${chf(r.cost.hddNodesCHF)} · media ${chf(r.cost.hddMediaCHF)}`;
+    `${intish(r.hdd.nodes)} nodes · ${intish(r.hdd.drives)} drives · ${capTB(r.hdd.capacityTB)} · ${bw(r.hdd.deliveredGBps)} delivered · ${sentence(r.hdd.limit)} · nodes ${chf(r.cost.hddNodesCHF)} · media ${chf(r.cost.hddMediaCHF)} · ${watts(r.power.hddW)}`;
   document.getElementById("foot-tape").textContent =
-    `${intish(r.tape.drives)} drives · ${bw(r.tape.bandwidthGBps)} · ${r.tape.capacityEB.toFixed(2)} EB · ${r.tape.maxPBPerDay.toFixed(2)} PB/day at full rate · drives ${chf(r.cost.tapeDrivesCHF)} · media ${chf(r.cost.tapeMediaCHF)}`;
+    `${intish(r.tape.drives)} drives · ${bw(r.tape.bandwidthGBps)} · ${r.tape.capacityEB.toFixed(2)} EB · ${r.tape.maxPBPerDay.toFixed(2)} PB/day at full rate · drives ${chf(r.cost.tapeDrivesCHF)} · media ${chf(r.cost.tapeMediaCHF)} · ${watts(r.power.tapeW)}`;
 }
 
 function metric(label, value) {
@@ -304,13 +332,15 @@ function renderStack(r) {
     el("div", "flow", "Reads"),
     block("nvme", "NVMe", bw(r.nvme.deliveredGBps), [
       ["Capacity", capTB(r.nvme.capacityTB)],
-      ["Network", bw(r.nvme.networkGBps)],
+      [r.hybrid ? "Shared network" : "Network", bw(r.nvme.networkGBps)],
       ["Drive BW", bw(r.nvme.driveAggregateGBps)],
       ["Served", bw(r.flow.nvmeServedGBps)],
       ["IOPS", iops(r.nvme.aggregateIOPS)],
       ["Limit", sentence(r.nvme.limit)],
-      ["Node cost", chf(r.cost.nvmeNodesCHF)],
+      [r.hybrid ? "Servers" : "Node cost", r.hybrid ? "None" : chf(r.cost.nvmeNodesCHF)],
       ["Media cost", chf(r.cost.nvmeMediaCHF)],
+      [r.hybrid ? "Server power" : "Node power", r.hybrid ? "None" : watts(r.power.nvmeNodesW)],
+      ["Drive power", watts(r.power.nvmeDrivesW)],
     ]),
     el("div", "flow", "Misses and staging"),
     block("hdd", "HDD", bw(r.hdd.deliveredGBps), [
@@ -319,12 +349,14 @@ function renderStack(r) {
       ["Read BW", bw(r.hdd.readDeliveredGBps)],
       ["Write BW", bw(r.hdd.writeDeliveredGBps)],
       ["Degradation", pct(r.hdd.degradation)],
-      ["Network", bw(r.hdd.networkGBps)],
+      [r.hybrid ? "Shared network" : "Network", bw(r.hdd.networkGBps)],
       ["Observed", r.flow.observedEnabled ? bw(r.hdd.observedGBps) : "Off"],
       ["Hardware slack", bw(r.flow.hddSlackGBps)],
       ["Limit", sentence(r.hdd.limit)],
       ["Node cost", chf(r.cost.hddNodesCHF)],
       ["Media cost", chf(r.cost.hddMediaCHF)],
+      ["Node power", watts(r.power.hddNodesW)],
+      ["Drive power", watts(r.power.hddDrivesW)],
     ]),
     el("div", "flow", "Archive down · recall up"),
     block("tape", "Tape", bw(r.tape.bandwidthGBps), [
@@ -338,6 +370,7 @@ function renderStack(r) {
       [prefetchLabel, pb(r.flow.prefetchPB)],
       ["Drive cost", chf(r.cost.tapeDrivesCHF)],
       ["Media cost", chf(r.cost.tapeMediaCHF)],
+      ["Drive power", watts(r.power.tapeDrivesW)],
     ]),
   );
 }
@@ -653,7 +686,7 @@ function renderSweep(r) {
   const host = document.getElementById("sweep");
   const table = document.createElement("table");
   const head = document.createElement("tr");
-  for (const label of ["Size", "Nodes", "Capacity", "Hardware", "Observed", "Tape/HW", "Tape/obs", "HW slack", "Obs slack", "Working set", "NVMe", "HDD", "Tape", "Total"]) {
+  for (const label of ["Size", "Nodes", "Capacity", "Hardware", "Observed", "Tape/HW", "Tape/obs", "HW slack", "Obs slack", "Working set", "NVMe", "HDD", "Tape", "Total", "Power"]) {
     head.append(el("th", "", label));
   }
   const thead = document.createElement("thead");
@@ -678,6 +711,7 @@ function renderSweep(r) {
       chf(p.hddCHF),
       chf(p.tapeCHF),
       chf(p.costCHF),
+      watts(p.powerW),
     ];
     cells.forEach((text, i) => {
       const td = el("td", "", text);
@@ -740,8 +774,28 @@ function setStreamReadout(per) {
   node.textContent = Math.abs(per - Math.round(per)) < 0.05 ? String(Math.round(per)) : per.toFixed(2);
 }
 
+function setHybrid(on) {
+  const btn = document.getElementById("hybrid");
+  btn.setAttribute("aria-pressed", on ? "true" : "false");
+  btn.classList.toggle("on", on);
+  document.querySelector(".card.nvme").classList.toggle("hybrid", on);
+  document.getElementById("nvme-nodes").disabled = on;
+  document.querySelectorAll('input[name="nvme-net"]').forEach((input) => {
+    input.disabled = on;
+  });
+  document.getElementById("nvme-drives-k").textContent = on ? "Drives / HDD node" : "Drives / node";
+  document.getElementById("nvme-hint").textContent = on
+    ? "NVMe drives sit in the HDD nodes and add no servers. Both tiers share the HDD network, and cache traffic is taken from that network before the HDD tier."
+    : "Delivered bandwidth is the minimum of aggregate drive bandwidth and the node line rate.";
+}
+
 function bind() {
   form.addEventListener("submit", (e) => e.preventDefault());
+  document.getElementById("hybrid").addEventListener("click", () => {
+    const on = document.getElementById("hybrid").getAttribute("aria-pressed") !== "true";
+    setHybrid(on);
+    schedule();
+  });
   form.addEventListener("input", (e) => {
     if (e.target.id === "streams-slider") {
       scaleStreams(Number(e.target.value));

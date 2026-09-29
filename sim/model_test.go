@@ -186,6 +186,73 @@ func TestDefaultCost(t *testing.T) {
 	}
 }
 
+func TestDefaultPower(t *testing.T) {
+	r := Evaluate(DefaultConfig())
+	near(t, r.Power.NVMeNodesW, 48*300, 1e-9, "nvme nodes")
+	near(t, r.Power.NVMeDrivesW, 480*20, 1e-9, "nvme drives")
+	near(t, r.Power.HDDNodesW, 833*300, 1e-9, "hdd nodes")
+	near(t, r.Power.HDDDrivesW, 74970*8, 1e-9, "hdd drives")
+	near(t, r.Power.TapeDrivesW, 750*30, 1e-9, "tape drives")
+	near(t, r.Power.TotalW, 896_160, 1e-6, "total")
+	if got := fmtPower(r.Power.TotalW); got != "896.2 kW" {
+		t.Fatalf("power format %q", got)
+	}
+	for _, p := range r.Sweep {
+		if p.Active {
+			near(t, p.PowerW, r.Power.TotalW, 1e-6, "sweep power")
+		}
+	}
+}
+
+func TestHybridSharesHDDNetwork(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Hybrid = true
+	r := Evaluate(cfg)
+	if !r.Hybrid {
+		t.Fatal("hybrid flag")
+	}
+	if r.NVMe.Nodes != 0 {
+		t.Fatalf("nvme servers %d", r.NVMe.Nodes)
+	}
+	if r.NVMe.Drives != 833*10 {
+		t.Fatalf("nvme drives %d", r.NVMe.Drives)
+	}
+	if r.NVMe.Binding != BindNetwork {
+		t.Fatalf("nvme binding %s", r.NVMe.Binding)
+	}
+	near(t, r.NVMe.DeliveredGBps, 10412.5, 1e-6, "nvme on shared net")
+	near(t, r.NVMe.NetworkGBps, r.HDD.NetworkGBps, 1e-9, "same network")
+	near(t, r.HDD.DeliveredGBps, 7731.712707, 1e-3, "idle cache leaves hdd")
+	if r.HDD.Binding != BindStream {
+		t.Fatalf("hdd binding %s", r.HDD.Binding)
+	}
+	if r.Cost.NVMeNodesCHF != 0 || r.Power.NVMeNodesW != 0 {
+		t.Fatalf("hybrid still charges servers: cost %g power %g", r.Cost.NVMeNodesCHF, r.Power.NVMeNodesW)
+	}
+	near(t, r.Cost.NVMeMediaCHF, float64(833*10)*7.68*200, 1e-3, "nvme media")
+	near(t, r.Power.NVMeDrivesW, float64(833*10)*20, 1e-6, "nvme drive power")
+	near(t, r.Power.HDDNodesW, 833*300, 1e-6, "hdd nodes stay")
+	joined := strings.Join(r.Formula.Lines, " ")
+	if !strings.Contains(joined, "Hybrid layout") || !strings.Contains(joined, "add no servers") {
+		t.Fatalf("formula %v", r.Formula.Lines)
+	}
+
+	cfg.Workload.NVMeHitRate = 1
+	cfg.Workload.ComputeReadGBps = 3000
+	r = Evaluate(cfg)
+	near(t, r.Flow.NVMeServedGBps, 3000, 1e-6, "served")
+	near(t, r.HDD.DeliveredGBps, 10412.5-3000, 1e-3, "hdd after nvme")
+	if r.HDD.Binding != BindNetwork {
+		t.Fatalf("hdd binding %s", r.HDD.Binding)
+	}
+	if r.HDD.Limit != "the shared HDD network after NVMe traffic" {
+		t.Fatalf("limit %q", r.HDD.Limit)
+	}
+	if r.Curve[0].NetworkGBps != 10412.5-3000 {
+		t.Fatalf("curve network %g", r.Curve[0].NetworkGBps)
+	}
+}
+
 func TestSanitizeNegative(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.HDD.Nodes = -4

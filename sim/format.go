@@ -111,6 +111,22 @@ func fmtCHF(v float64) string {
 	}
 }
 
+func fmtPower(watts float64) string {
+	sign := ""
+	if watts < 0 {
+		sign = "-"
+		watts = -watts
+	}
+	switch {
+	case watts >= 1e6:
+		return sign + trimFloat(watts/1e6, 2) + " MW"
+	case watts >= 1000:
+		return sign + trimFloat(watts/1000, 1) + " kW"
+	default:
+		return sign + trimFloat(watts, 0) + " W"
+	}
+}
+
 func fmtHours(h float64) string {
 	if h < 0 {
 		h = 0

@@ -112,13 +112,25 @@ type Prices struct {
 	TapeCHFPerTB float64 `json:"tapeCHFPerTB"`
 }
 
+// PowerRates are active watts. NodeW is the server without its drives.
+type PowerRates struct {
+	NodeW      float64 `json:"nodeW"`
+	NVMeDriveW float64 `json:"nvmeDriveW"`
+	HDDDriveW  float64 `json:"hddDriveW"`
+	TapeDriveW float64 `json:"tapeDriveW"`
+}
+
 type Config struct {
-	NVMe     NodeTier `json:"nvme"`
-	HDD      NodeTier `json:"hdd"`
-	Tape     TapeTier `json:"tape"`
-	Stream   Stream   `json:"stream"`
-	Workload Workload `json:"workload"`
-	Prices   Prices   `json:"prices"`
+	NVMe     NodeTier   `json:"nvme"`
+	HDD      NodeTier   `json:"hdd"`
+	Tape     TapeTier   `json:"tape"`
+	Stream   Stream     `json:"stream"`
+	Workload Workload   `json:"workload"`
+	Prices   Prices     `json:"prices"`
+	Power    PowerRates `json:"power"`
+	// Hybrid installs the NVMe drives in the HDD nodes. Those drives add no
+	// servers, and both tiers share the HDD network.
+	Hybrid bool `json:"hybrid"`
 }
 
 func DefaultConfig() Config {
@@ -156,6 +168,12 @@ func DefaultConfig() Config {
 			HDDCHFPerTB:  20,
 			TapeDriveCHF: 25_000,
 			TapeCHFPerTB: 10,
+		},
+		Power: PowerRates{
+			NodeW:      300,
+			NVMeDriveW: 20,
+			HDDDriveW:  8,
+			TapeDriveW: 30,
 		},
 	}
 }
@@ -291,6 +309,7 @@ type SweepPoint struct {
 	HDDCHF            float64 `json:"hddCHF"`
 	TapeCHF           float64 `json:"tapeCHF"`
 	CostCHF           float64 `json:"costCHF"`
+	PowerW            float64 `json:"powerW"`
 }
 
 type Knee struct {
@@ -341,7 +360,20 @@ type Cost struct {
 	HDDDeltaCHF    float64 `json:"hddDeltaCHF"`
 }
 
+type Power struct {
+	NVMeNodesW  float64 `json:"nvmeNodesW"`
+	NVMeDrivesW float64 `json:"nvmeDrivesW"`
+	HDDNodesW   float64 `json:"hddNodesW"`
+	HDDDrivesW  float64 `json:"hddDrivesW"`
+	TapeDrivesW float64 `json:"tapeDrivesW"`
+	NVMeW       float64 `json:"nvmeW"`
+	HDDW        float64 `json:"hddW"`
+	TapeW       float64 `json:"tapeW"`
+	TotalW      float64 `json:"totalW"`
+}
+
 type Result struct {
+	Hybrid   bool         `json:"hybrid"`
 	NVMe     TierStats    `json:"nvme"`
 	HDD      HDDStats     `json:"hdd"`
 	Tape     TapeStats    `json:"tape"`
@@ -352,6 +384,7 @@ type Result struct {
 	Knee     Knee         `json:"knee"`
 	Bounds   Bounds       `json:"bounds"`
 	Cost     Cost         `json:"cost"`
+	Power    Power        `json:"power"`
 	Verdict  Verdict      `json:"verdict"`
 	Warnings []string     `json:"warnings"`
 }
@@ -369,20 +402,99 @@ func Evaluate(cfg Config) Result {
 func evaluate(cfg Config) Result {
 	nvme := evalNode(cfg.NVMe)
 	hdd := evalHDD(cfg.HDD, cfg.Stream, cfg.Workload)
+	if cfg.Hybrid {
+		applyHybrid(cfg, &nvme, &hdd)
+	}
 	tape := evalTape(cfg.Tape)
 	flow := evalFlow(cfg.Workload, nvme, hdd, tape)
 	bounds := evalBounds(hdd, flow, cfg.Workload)
 	formula := evalFormula(cfg, hdd)
+	curveNet := hdd.NetworkGBps
+	if cfg.Hybrid {
+		remain := hdd.NetworkGBps - flow.NVMeServedGBps
+		if remain < 0 {
+			remain = 0
+		}
+		curveNet = remain
+		formula.Lines = append(formula.Lines, hybridLine(hdd.NetworkGBps, flow.NVMeServedGBps))
+	}
 	return Result{
+		Hybrid:  cfg.Hybrid,
 		NVMe:    nvme,
 		HDD:     hdd,
 		Tape:    tape,
 		Flow:    flow,
 		Bounds:  bounds,
 		Cost:    evalCost(cfg, nvme, hdd, tape),
+		Power:   evalPower(cfg.Power, nvme, hdd, tape),
 		Formula: formula,
-		Curve:   evalCurve(cfg, hdd.CapacityEB),
+		Curve:   evalCurve(cfg, hdd.CapacityEB, curveNet),
 	}
+}
+
+// applyHybrid places the NVMe complement in the HDD nodes. Drive count is
+// HDD nodes times the NVMe drives-per-node setting. The separate NVMe node
+// count and network are not used. NVMe traffic is served first and the HDD
+// tier keeps what remains of the shared network.
+func applyHybrid(cfg Config, nvme *TierStats, hdd *HDDStats) {
+	drives := cfg.HDD.Nodes * cfg.NVMe.DrivesPerNode
+	capTB := float64(drives) * cfg.NVMe.DriveSizeTB
+	driveAgg := float64(drives) * cfg.NVMe.DriveBWGBps
+	net := hdd.NetworkGBps
+	nvmeDel, nvmeBind := clipBandwidth(driveAgg, net, BindDrives, BindNetwork)
+	*nvme = TierStats{
+		Nodes:              0,
+		Drives:             drives,
+		CapacityTB:         capTB,
+		CapacityEB:         capTB / 1e6,
+		NetworkPerNodeGBps: hdd.NetworkPerNodeGBps,
+		NetworkGBps:        net,
+		DriveAggregateGBps: driveAgg,
+		DeliveredGBps:      nvmeDel,
+		Binding:            nvmeBind,
+		Limit:              hybridNVMeLimit(nvmeBind),
+		AggregateIOPS:      float64(drives) * cfg.NVMe.DriveIOPS,
+		NetworkGbps:        cfg.HDD.NetworkGbps,
+	}
+	served := cfg.Workload.ComputeReadGBps * cfg.Workload.NVMeHitRate
+	if served > nvmeDel {
+		served = nvmeDel
+	}
+	remain := net - served
+	if remain < 0 {
+		remain = 0
+	}
+	hddDel, hddBind := clipBandwidth(hdd.StreamAggregateGBps, remain, BindStream, BindNetwork)
+	hdd.DeliveredGBps = hddDel
+	hdd.Binding = hddBind
+	if served > 0 && (hddBind == BindNetwork || hddBind == BindBoth) {
+		hdd.Limit = "the shared HDD network after NVMe traffic"
+	} else {
+		hdd.Limit = limitClause(hddBind, hdd.Mode)
+	}
+	hdd.ReadDeliveredGBps, hdd.WriteDeliveredGBps = splitBandwidth(cfg.Stream.ReadStreams, cfg.Stream.WriteStreams, hddDel)
+	if hdd.CapacityEB > 0 {
+		hdd.ImpliedTBpsPerEB = (hddDel / 1000) / hdd.CapacityEB
+	}
+}
+
+func hybridNVMeLimit(binding string) string {
+	switch binding {
+	case BindNetwork:
+		return "the shared HDD network"
+	case BindBoth:
+		return "drive bandwidth and the shared HDD network"
+	default:
+		return limitClause(binding, "")
+	}
+}
+
+func hybridLine(network, served float64) string {
+	remain := network - served
+	if remain < 0 {
+		remain = 0
+	}
+	return "Hybrid layout installs the NVMe drives in the HDD nodes. They add no servers and share the " + fmtBW(network) + " network. NVMe traffic uses " + fmtBW(served) + ", leaving " + fmtBW(remain) + " for the HDD tier."
 }
 
 func evalCost(cfg Config, nvme TierStats, hdd HDDStats, tape TapeStats) Cost {
@@ -407,6 +519,21 @@ func evalCost(cfg Config, nvme TierStats, hdd HDDStats, tape TapeStats) Cost {
 		c.HDDDeltaCHF = c.HDDCHF - c.BaselineHDDCHF
 	}
 	return c
+}
+
+func evalPower(rates PowerRates, nvme TierStats, hdd HDDStats, tape TapeStats) Power {
+	p := Power{
+		NVMeNodesW:  float64(nvme.Nodes) * rates.NodeW,
+		NVMeDrivesW: float64(nvme.Drives) * rates.NVMeDriveW,
+		HDDNodesW:   float64(hdd.Nodes) * rates.NodeW,
+		HDDDrivesW:  float64(hdd.Drives) * rates.HDDDriveW,
+		TapeDrivesW: float64(tape.Drives) * rates.TapeDriveW,
+	}
+	p.NVMeW = p.NVMeNodesW + p.NVMeDrivesW
+	p.HDDW = p.HDDNodesW + p.HDDDrivesW
+	p.TapeW = p.TapeDrivesW
+	p.TotalW = p.NVMeW + p.HDDW + p.TapeW
+	return p
 }
 
 func evalNode(t NodeTier) TierStats {
@@ -725,7 +852,7 @@ func formulaLines(f Formula, hdd HDDStats) []string {
 	return lines
 }
 
-func evalCurve(cfg Config, capacityEB float64) []CurvePoint {
+func evalCurve(cfg Config, capacityEB, networkGBps float64) []CurvePoint {
 	drives := cfg.HDD.Nodes * cfg.HDD.DrivesPerNode
 	n := streamsPerDrive(cfg.Stream, drives)
 	if n < 1 {
@@ -738,7 +865,7 @@ func evalCurve(cfg Config, capacityEB float64) []CurvePoint {
 	}
 	xs = appendUnique(xs, streamsPerDrive(cfg.Stream, drives))
 	sort.Float64s(xs)
-	net := float64(cfg.HDD.Nodes) * cfg.HDD.NetworkGbps / 8
+	net := networkGBps
 	observed := 0.0
 	if cfg.Workload.ObservedTBpsPerEB > 0 {
 		observed = capacityEB * cfg.Workload.ObservedTBpsPerEB * 1000
@@ -813,6 +940,7 @@ func makeSweep(target float64, custom, active bool, st Result) SweepPoint {
 		HDDCHF:            st.Cost.HDDCHF,
 		TapeCHF:           st.Cost.TapeCHF,
 		CostCHF:           st.Cost.TotalCHF,
+		PowerW:            st.Power.TotalW,
 	}
 }
 
@@ -963,6 +1091,10 @@ func sanitize(cfg *Config) []string {
 	cfg.Prices.HDDCHFPerTB = nonnegF("HDD media price", cfg.Prices.HDDCHFPerTB, &w)
 	cfg.Prices.TapeDriveCHF = nonnegF("Tape drive price", cfg.Prices.TapeDriveCHF, &w)
 	cfg.Prices.TapeCHFPerTB = nonnegF("Tape media price", cfg.Prices.TapeCHFPerTB, &w)
+	cfg.Power.NodeW = nonnegF("Node power", cfg.Power.NodeW, &w)
+	cfg.Power.NVMeDriveW = nonnegF("NVMe drive power", cfg.Power.NVMeDriveW, &w)
+	cfg.Power.HDDDriveW = nonnegF("HDD power", cfg.Power.HDDDriveW, &w)
+	cfg.Power.TapeDriveW = nonnegF("Tape drive power", cfg.Power.TapeDriveW, &w)
 	if cfg.Workload.NVMeHitRate < 0 || cfg.Workload.NVMeHitRate > 1 || math.IsNaN(cfg.Workload.NVMeHitRate) {
 		w = append(w, "NVMe hit rate was outside 0–100% and was clamped.")
 		cfg.Workload.NVMeHitRate = clamp01(cfg.Workload.NVMeHitRate)
