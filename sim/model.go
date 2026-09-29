@@ -444,20 +444,28 @@ type Power struct {
 }
 
 type Summary struct {
-	NVMeIOPS            float64 `json:"nvmeIOPS"`
-	HDDIOPS             float64 `json:"hddIOPS"`
-	TotalIOPS           float64 `json:"totalIOPS"`
-	CostCHF             float64 `json:"costCHF"`
-	NVMeCapacityEB      float64 `json:"nvmeCapacityEB"`
-	HDDCapacityEB       float64 `json:"hddCapacityEB"`
-	TapeCapacityEB      float64 `json:"tapeCapacityEB"`
-	TotalCapacityEB     float64 `json:"totalCapacityEB"`
-	FileSizeGB          float64 `json:"fileSizeGB"`
-	NVMeFilesPerSec     float64 `json:"nvmeFilesPerSec"`
-	HDDReadFilesPerSec  float64 `json:"hddReadFilesPerSec"`
-	HDDWriteFilesPerSec float64 `json:"hddWriteFilesPerSec"`
-	HDDFilesPerSec      float64 `json:"hddFilesPerSec"`
-	TapeFilesPerSec     float64 `json:"tapeFilesPerSec"`
+	NVMeIOPS              float64 `json:"nvmeIOPS"`
+	HDDIOPS               float64 `json:"hddIOPS"`
+	TotalIOPS             float64 `json:"totalIOPS"`
+	CostCHF               float64 `json:"costCHF"`
+	NVMeCapacityEB        float64 `json:"nvmeCapacityEB"`
+	HDDCapacityEB         float64 `json:"hddCapacityEB"`
+	TapeCapacityEB        float64 `json:"tapeCapacityEB"`
+	TotalCapacityEB       float64 `json:"totalCapacityEB"`
+	FileSizeGB            float64 `json:"fileSizeGB"`
+	NVMeFilesPerSec       float64 `json:"nvmeFilesPerSec"`
+	HDDReadFilesPerSec    float64 `json:"hddReadFilesPerSec"`
+	HDDWriteFilesPerSec   float64 `json:"hddWriteFilesPerSec"`
+	HDDFilesPerSec        float64 `json:"hddFilesPerSec"`
+	TapeFilesPerSec       float64 `json:"tapeFilesPerSec"`
+	NVMeBandwidthGBps     float64 `json:"nvmeBandwidthGBps"`
+	HDDReadBandwidthGBps  float64 `json:"hddReadBandwidthGBps"`
+	HDDWriteBandwidthGBps float64 `json:"hddWriteBandwidthGBps"`
+	HDDBandwidthGBps      float64 `json:"hddBandwidthGBps"`
+	TapeBandwidthGBps     float64 `json:"tapeBandwidthGBps"`
+	UsableBandwidthGBps   float64 `json:"usableBandwidthGBps"`
+	HDDUsableIOPS         float64 `json:"hddUsableIOPS"`
+	UsableIOPS            float64 `json:"usableIOPS"`
 }
 
 type Result struct {
@@ -510,7 +518,7 @@ func evaluate(cfg Config) Result {
 		formula.Lines = append(formula.Lines, hybridLine(hdd.NetworkGBps, flow.NVMeServedGBps))
 	}
 	cost := evalCost(cfg, nvme, hdd, tape)
-	summary := evalSummary(nvme, hdd, tape, cost, cfg.Workload.FileSizeGB, flow.ReadVolume, flow.WriteVolume)
+	summary := evalSummary(nvme, hdd, tape, cost, cfg.Workload.FileSizeGB, flow.ReadVolume, flow.WriteVolume, cfg.Stream.SegmentMB)
 	if cfg.Workload.FileSizeGB > 0 {
 		formula.Lines = append(formula.Lines, "A "+fmtNum(cfg.Workload.FileSizeGB)+" GB file gives the HDD tier "+fmtNum(summary.HDDReadFilesPerSec)+" read files/s and "+fmtNum(summary.HDDWriteFilesPerSec)+" write files/s at this stream mix.")
 	}
@@ -548,20 +556,38 @@ func filesPerSec(gbps, fileGB, volume float64) float64 {
 	return gbps / (fileGB * volume)
 }
 
-func evalSummary(nvme TierStats, hdd HDDStats, tape TapeStats, cost Cost, fileGB, readVolume, writeVolume float64) Summary {
-	s := Summary{
-		NVMeIOPS:            nvme.AggregateIOPS,
-		HDDIOPS:             hdd.DeliveredIOPS,
-		CostCHF:             cost.TotalCHF,
-		NVMeCapacityEB:      nvme.CapacityEB,
-		HDDCapacityEB:       hdd.CapacityEB,
-		TapeCapacityEB:      tape.CapacityEB,
-		FileSizeGB:          fileGB,
-		NVMeFilesPerSec:     filesPerSec(nvme.DeliveredGBps, fileGB, 1),
-		HDDReadFilesPerSec:  filesPerSec(hdd.ReadDeliveredGBps, fileGB, readVolume),
-		HDDWriteFilesPerSec: filesPerSec(hdd.WriteDeliveredGBps, fileGB, writeVolume),
-		TapeFilesPerSec:     filesPerSec(tape.BandwidthGBps, fileGB, 1),
+func evalSummary(nvme TierStats, hdd HDDStats, tape TapeStats, cost Cost, fileGB, readVolume, writeVolume, segmentMB float64) Summary {
+	hddReadBW := 0.0
+	if readVolume > 0 {
+		hddReadBW = hdd.ReadDeliveredGBps / readVolume
 	}
+	hddWriteBW := 0.0
+	if writeVolume > 0 {
+		hddWriteBW = hdd.WriteDeliveredGBps / writeVolume
+	}
+	s := Summary{
+		NVMeIOPS:              nvme.AggregateIOPS,
+		HDDIOPS:               hdd.DeliveredIOPS,
+		CostCHF:               cost.TotalCHF,
+		NVMeCapacityEB:        nvme.CapacityEB,
+		HDDCapacityEB:         hdd.CapacityEB,
+		TapeCapacityEB:        tape.CapacityEB,
+		FileSizeGB:            fileGB,
+		NVMeFilesPerSec:       filesPerSec(nvme.DeliveredGBps, fileGB, 1),
+		HDDReadFilesPerSec:    filesPerSec(hdd.ReadDeliveredGBps, fileGB, readVolume),
+		HDDWriteFilesPerSec:   filesPerSec(hdd.WriteDeliveredGBps, fileGB, writeVolume),
+		TapeFilesPerSec:       filesPerSec(tape.BandwidthGBps, fileGB, 1),
+		NVMeBandwidthGBps:     nvme.DeliveredGBps,
+		HDDReadBandwidthGBps:  hddReadBW,
+		HDDWriteBandwidthGBps: hddWriteBW,
+		HDDBandwidthGBps:      hddReadBW + hddWriteBW,
+		TapeBandwidthGBps:     tape.BandwidthGBps,
+	}
+	s.UsableBandwidthGBps = s.NVMeBandwidthGBps + s.HDDBandwidthGBps + s.TapeBandwidthGBps
+	if segmentMB > 0 {
+		s.HDDUsableIOPS = s.HDDBandwidthGBps / (segmentMB / 1000)
+	}
+	s.UsableIOPS = s.NVMeIOPS + s.HDDUsableIOPS
 	s.TotalIOPS = s.NVMeIOPS + s.HDDIOPS
 	s.TotalCapacityEB = s.NVMeCapacityEB + s.HDDCapacityEB + s.TapeCapacityEB
 	s.HDDFilesPerSec = s.HDDReadFilesPerSec + s.HDDWriteFilesPerSec
