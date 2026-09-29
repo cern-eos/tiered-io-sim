@@ -170,6 +170,25 @@ button.hybrid.on {
   color: #1a1208;
 }
 
+button.repack {
+  margin-top: 8px;
+  font-family: var(--mono);
+  font-size: 12px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  padding: 6px 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+button.repack.on {
+  background: var(--hdd);
+  border-color: var(--hdd);
+  color: #1a1208;
+}
+
 .card.nvme.hybrid #nvme-nodes-field,
 .card.nvme.hybrid .net {
   opacity: 0.4;

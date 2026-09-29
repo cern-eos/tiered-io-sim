@@ -184,6 +184,7 @@ function fill(cfg) {
   setNum("power-hdd", power.hddDriveW, 2);
   setNum("power-tape", power.tapeDriveW, 2);
   setHybrid(Boolean(cfg.hybrid));
+  setRepack(Boolean(cfg.repack));
 }
 
 function readConfig() {
@@ -263,6 +264,7 @@ function readConfig() {
       tapeDriveW: v["power-tape"],
     },
     hybrid: document.getElementById("hybrid").getAttribute("aria-pressed") === "true",
+    repack: document.getElementById("repack").getAttribute("aria-pressed") === "true",
     layout,
   };
 }
@@ -433,6 +435,7 @@ function renderStack(r) {
       ["Files/s", filesRate(r.summary.tapeFilesPerSec)],
       ["Archive", bw(r.flow.archiveGBps)],
       ["Recall", bw(r.flow.recallGBps)],
+      ["3y repack", r.flow.repack ? bw(r.flow.repackGBps) + " read + " + bw(r.flow.repackGBps) + " write" : "Off"],
       ["Slack", bw(r.flow.tapeSlackGBps)],
       ["Recall / day", pb(r.flow.recallPBPerDay)],
       ["Cold restage", hours(r.flow.stageWorkingSetHours)],
@@ -492,6 +495,8 @@ function renderBudgets(r) {
     { name: "Compute write", value: r.flow.hddComputeWriteGBps, color: "#b7aa9a", text: bw(r.flow.hddComputeWriteGBps) },
     { name: "Archive", value: r.flow.hddArchiveGBps, color: "#8f5e34", text: bw(r.flow.hddArchiveGBps) },
     { name: "Recall", value: r.flow.hddRecallGBps, color: "#c4894a", text: bw(r.flow.hddRecallGBps) },
+    { name: "Repack read", value: r.flow.hddRepackReadGBps, color: "#d4a574", text: bw(r.flow.hddRepackReadGBps) },
+    { name: "Repack write", value: r.flow.hddRepackWriteGBps, color: "#6e4a2a", text: bw(r.flow.hddRepackWriteGBps) },
   ];
   let hddCaption = `${r.flow.layoutName}: reads ${factor(r.flow.readVolume)}, writes ${factor(r.flow.writeVolume)}. Delivered ${bw(r.hdd.deliveredGBps)}. Unallocated ${bw(r.flow.hddSlackGBps)}.`;
   let marker = null;
@@ -508,6 +513,8 @@ function renderBudgets(r) {
   const tapeSegs = [
     { name: "Archive", value: r.flow.archiveGBps, color: "#8f5e34", text: bw(r.flow.archiveGBps) },
     { name: "Recall", value: r.flow.recallGBps, color: "#c4894a", text: bw(r.flow.recallGBps) },
+    { name: "Repack read", value: r.flow.repackGBps, color: "#d4a574", text: bw(r.flow.repackGBps) },
+    { name: "Repack write", value: r.flow.repackGBps, color: "#6e4a2a", text: bw(r.flow.repackGBps) },
   ];
   let tapeCaption = `Tape supplies ${bw(r.tape.bandwidthGBps)} and has ${bw(r.flow.tapeSlackGBps)} unallocated.`;
   let tapeMarker = null;
@@ -843,6 +850,17 @@ function setStreamReadout(per) {
   node.textContent = Math.abs(per - Math.round(per)) < 0.05 ? String(Math.round(per)) : per.toFixed(2);
 }
 
+const tapeHintOff = "Aggregate bandwidth is the drive count times bandwidth per drive. Library capacity is the cartridge pool and does not follow from the drive count. Treat the aggregate as burst capability, not a continuous setpoint.";
+const tapeHintOn = tapeHintOff + " A 3-year repack reads that library and writes it back, on top of archive and recall. The HDD tier reads the data out to the new tapes and writes the data in from the old ones.";
+
+function setRepack(on) {
+  const btn = document.getElementById("repack");
+  btn.setAttribute("aria-pressed", on ? "true" : "false");
+  btn.classList.toggle("on", on);
+  const hint = document.getElementById("tape-hint");
+  if (hint) hint.textContent = on ? tapeHintOn : tapeHintOff;
+}
+
 function setHybrid(on) {
   const btn = document.getElementById("hybrid");
   btn.setAttribute("aria-pressed", on ? "true" : "false");
@@ -863,6 +881,11 @@ function bind() {
   document.getElementById("hybrid").addEventListener("click", () => {
     const on = document.getElementById("hybrid").getAttribute("aria-pressed") !== "true";
     setHybrid(on);
+    schedule();
+  });
+  document.getElementById("repack").addEventListener("click", () => {
+    const on = document.getElementById("repack").getAttribute("aria-pressed") !== "true";
+    setRepack(on);
     schedule();
   });
   form.addEventListener("input", (e) => {

@@ -7,7 +7,11 @@ import (
 	"sort"
 )
 
-const SecondsPerYear = 365 * 24 * 3600
+const (
+	SecondsPerYear = 365 * 24 * 3600
+	// RepackYears is how long a full library read-and-rewrite is spread over.
+	RepackYears = 3
+)
 
 const (
 	BindNone    = "none"
@@ -132,6 +136,9 @@ type Config struct {
 	// Hybrid installs the NVMe drives in the HDD nodes. Those drives add no
 	// servers, and both tiers share the HDD network.
 	Hybrid bool `json:"hybrid"`
+	// Repack reads the tape library and writes it back over RepackYears,
+	// in addition to the archive and recall rates.
+	Repack bool `json:"repack"`
 	// Layout is how the HDD tier protects data: "replica" or "ec10p2".
 	Layout string `json:"layout"`
 }
@@ -288,6 +295,8 @@ type Flow struct {
 	RecallEBPerYear      float64 `json:"recallEBPerYear"`
 	TapeDemandGBps       float64 `json:"tapeDemandGBps"`
 	TapeSlackGBps        float64 `json:"tapeSlackGBps"`
+	Repack               bool    `json:"repack"`
+	RepackGBps           float64 `json:"repackGBps"`
 	RecallPBPerHour      float64 `json:"recallPBPerHour"`
 	RecallPBPerDay       float64 `json:"recallPBPerDay"`
 	PrefetchPB           float64 `json:"prefetchPB"`
@@ -302,6 +311,8 @@ type Flow struct {
 	HDDComputeWriteGBps  float64 `json:"hddComputeWriteGBps"`
 	HDDArchiveGBps       float64 `json:"hddArchiveGBps"`
 	HDDRecallGBps        float64 `json:"hddRecallGBps"`
+	HDDRepackReadGBps    float64 `json:"hddRepackReadGBps"`
+	HDDRepackWriteGBps   float64 `json:"hddRepackWriteGBps"`
 	HDDDemandGBps        float64 `json:"hddDemandGBps"`
 	HDDSlackGBps         float64 `json:"hddSlackGBps"`
 	ObservedSlackGBps    float64 `json:"observedSlackGBps"`
@@ -451,6 +462,7 @@ type Summary struct {
 
 type Result struct {
 	Hybrid   bool         `json:"hybrid"`
+	Repack   bool         `json:"repack"`
 	NVMe     TierStats    `json:"nvme"`
 	HDD      HDDStats     `json:"hdd"`
 	Tape     TapeStats    `json:"tape"`
@@ -485,7 +497,7 @@ func evaluate(cfg Config) Result {
 	}
 	assignDeliveredIOPS(&hdd, cfg.Stream.SegmentMB)
 	tape := evalTape(cfg.Tape)
-	flow := evalFlow(cfg.Workload, cfg.Layout, nvme, hdd, tape)
+	flow := evalFlow(cfg.Workload, cfg.Layout, cfg.Repack, nvme, hdd, tape)
 	bounds := evalBounds(hdd, flow, cfg.Workload)
 	formula := evalFormula(cfg, hdd)
 	curveNet := hdd.NetworkGBps
@@ -502,8 +514,12 @@ func evaluate(cfg Config) Result {
 	if cfg.Workload.FileSizeGB > 0 {
 		formula.Lines = append(formula.Lines, "A "+fmtNum(cfg.Workload.FileSizeGB)+" GB file gives the HDD tier "+fmtNum(summary.HDDReadFilesPerSec)+" read files/s and "+fmtNum(summary.HDDWriteFilesPerSec)+" write files/s at this stream mix.")
 	}
+	if cfg.Repack {
+		formula.Lines = append(formula.Lines, repackLine(tape.CapacityEB, flow))
+	}
 	return Result{
 		Hybrid:  cfg.Hybrid,
+		Repack:  cfg.Repack,
 		NVMe:    nvme,
 		HDD:     hdd,
 		Tape:    tape,
@@ -787,7 +803,7 @@ func evalTape(t TapeTier) TapeStats {
 	}
 }
 
-func evalFlow(wl Workload, layout string, nvme TierStats, hdd HDDStats, tape TapeStats) Flow {
+func evalFlow(wl Workload, layout string, repack bool, nvme TierStats, hdd HDDStats, tape TapeStats) Flow {
 	factors := layoutOf(layout)
 	archive := ebPerYearToGBps(wl.ArchiveEBPerYear)
 	recall := wl.RecallGBps
@@ -801,7 +817,16 @@ func evalFlow(wl Workload, layout string, nvme TierStats, hdd HDDStats, tape Tap
 	hddWriteTraffic := wl.ComputeWriteGBps * factors.WriteVolume
 	archiveTraffic := archive * factors.ReadVolume
 	recallTraffic := recall * factors.WriteVolume
-	demand := hddReadTraffic + hddWriteTraffic + archiveTraffic + recallTraffic
+	repackEach := 0.0
+	if repack {
+		repackEach = ebPerYearToGBps(tape.CapacityEB / RepackYears)
+	}
+	// A repack reads the library onto disk, then reads that data back off
+	// disk to write the new tapes. Archive is a disk read; recall is a disk write.
+	hddRepackRead := repackEach * factors.ReadVolume
+	hddRepackWrite := repackEach * factors.WriteVolume
+	demand := hddReadTraffic + hddWriteTraffic + archiveTraffic + recallTraffic + hddRepackRead + hddRepackWrite
+	tapeDemand := archive + recall + 2*repackEach
 	workingSetEB := wl.WorkingSetPB / 1000
 	reserveEB := hdd.CapacityEB * wl.ReserveFraction
 	freeEB := hdd.CapacityEB - workingSetEB - reserveEB
@@ -838,8 +863,10 @@ func evalFlow(wl Workload, layout string, nvme TierStats, hdd HDDStats, tape Tap
 		ArchiveFraction:      archFrac,
 		RecallGBps:           recall,
 		RecallEBPerYear:      gbpsToEBPerYear(recall),
-		TapeDemandGBps:       archive + recall,
-		TapeSlackGBps:        tape.BandwidthGBps - archive - recall,
+		TapeDemandGBps:       tapeDemand,
+		TapeSlackGBps:        tape.BandwidthGBps - tapeDemand,
+		Repack:               repack,
+		RepackGBps:           repackEach,
 		RecallPBPerHour:      pbPerHour,
 		RecallPBPerDay:       gbpsToPBPerDay(recall),
 		PrefetchPB:           pbPerHour * wl.PrefetchHorizonHours,
@@ -854,6 +881,8 @@ func evalFlow(wl Workload, layout string, nvme TierStats, hdd HDDStats, tape Tap
 		HDDComputeWriteGBps:  hddWriteTraffic,
 		HDDArchiveGBps:       archiveTraffic,
 		HDDRecallGBps:        recallTraffic,
+		HDDRepackReadGBps:    hddRepackRead,
+		HDDRepackWriteGBps:   hddRepackWrite,
 		HDDDemandGBps:        demand,
 		HDDSlackGBps:         hdd.DeliveredGBps - demand,
 		ObservedSlackGBps:    observedSlack,
@@ -996,6 +1025,13 @@ func formulaLines(f Formula, hdd HDDStats) []string {
 		lines = append(lines, line)
 	}
 	return lines
+}
+
+func repackLine(capacityEB float64, flow Flow) string {
+	return "A " + fmtInt(RepackYears) + "-year repack reads and rewrites the " + fmtEB(capacityEB) +
+		" archive, adding " + fmtBW(flow.RepackGBps) + " of tape read and " + fmtBW(flow.RepackGBps) +
+		" of tape write. The HDD tier reads " + fmtBW(flow.HDDRepackReadGBps) +
+		" to feed the rewrite and writes " + fmtBW(flow.HDDRepackWriteGBps) + " to take the tape read."
 }
 
 func layoutStreamLine(hdd HDDStats) string {

@@ -298,6 +298,36 @@ func TestErasureCodingLayout(t *testing.T) {
 	}
 }
 
+func TestRepackReadsAndRewritesArchive(t *testing.T) {
+	off := Evaluate(DefaultConfig())
+	if off.Repack || off.Flow.Repack || off.Flow.RepackGBps != 0 {
+		t.Fatalf("repack should be off: %+v", off.Flow)
+	}
+	cfg := DefaultConfig()
+	cfg.Repack = true
+	r := Evaluate(cfg)
+	each := ebPerYearToGBps(cfg.Tape.CapacityEB / RepackYears)
+	near(t, r.Flow.RepackGBps, each, 1e-9, "each way")
+	near(t, r.Flow.TapeDemandGBps, r.Flow.ArchiveGBps+r.Flow.RecallGBps+2*each, 1e-9, "tape demand")
+	near(t, r.Flow.HDDRepackReadGBps, each*0.9, 1e-9, "hdd read")
+	near(t, r.Flow.HDDRepackWriteGBps, each*1.1, 1e-9, "hdd write")
+	near(t, r.Flow.HDDDemandGBps, off.Flow.HDDDemandGBps+each*0.9+each*1.1, 1e-6, "hdd demand")
+	text := strings.Join(r.Verdict.Lines, " ")
+	if !strings.Contains(text, "3-year repack") {
+		t.Fatalf("verdict missing repack\n%s", text)
+	}
+	joined := strings.Join(r.Formula.Lines, " ")
+	if !strings.Contains(joined, "reads and rewrites") {
+		t.Fatalf("formula %v", r.Formula.Lines)
+	}
+
+	cfg.Layout = LayoutReplica
+	r = Evaluate(cfg)
+	near(t, r.Flow.HDDRepackReadGBps, each, 1e-9, "replica read")
+	near(t, r.Flow.HDDRepackWriteGBps, each*2, 1e-9, "replica write")
+	near(t, r.Flow.TapeDemandGBps, r.Flow.ArchiveGBps+r.Flow.RecallGBps+2*each, 1e-9, "tape stays logical")
+}
+
 func TestSanitizeNegative(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.HDD.Nodes = -4

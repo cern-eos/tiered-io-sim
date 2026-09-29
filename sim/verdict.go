@@ -77,10 +77,16 @@ func tapeLine(r Result) string {
 	}
 	line += ". Recall at " + fmtBW(r.Flow.RecallGBps) + " moves " + fmtEB(r.Flow.RecallEBPerYear) +
 		"/year and stages " + fmtPB(r.Flow.RecallPBPerDay) + "/day."
+	what := "Archive and recall"
+	if r.Flow.Repack {
+		line += " A " + fmtInt(RepackYears) + "-year repack reads and rewrites the " + fmtEB(r.Tape.CapacityEB) +
+			" library at " + fmtBW(r.Flow.RepackGBps) + " each way."
+		what = "Archive, recall, and repack"
+	}
 	if r.Flow.TapeSlackGBps >= 0 {
-		line += " Archive and recall together use " + fmtBW(r.Flow.TapeDemandGBps) + " and leave " + fmtBW(r.Flow.TapeSlackGBps) + " of tape."
+		line += " " + what + " together use " + fmtBW(r.Flow.TapeDemandGBps) + " and leave " + fmtBW(r.Flow.TapeSlackGBps) + " of tape."
 	} else {
-		line += " Archive and recall together require " + fmtBW(r.Flow.TapeDemandGBps) + ", " + fmtBW(-r.Flow.TapeSlackGBps) + " above tape bandwidth."
+		line += " " + what + " together require " + fmtBW(r.Flow.TapeDemandGBps) + ", " + fmtBW(-r.Flow.TapeSlackGBps) + " above tape bandwidth."
 	}
 	return line
 }
