@@ -7,6 +7,7 @@ import (
 	"html/template"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"tiered-io/sim"
@@ -18,14 +19,18 @@ var webFS embed.FS
 var pageTpl = template.Must(template.ParseFS(webFS, "web/index.html"))
 
 func main() {
-	addr := flag.String("addr", "127.0.0.1:8090", "listen address")
+	addr := flag.String("addr", ":8090", "listen address")
 	flag.Parse()
 	srv := &http.Server{
 		Addr:              *addr,
 		Handler:           newMux(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
-	log.Printf("tiered-io simulator at http://%s", *addr)
+	shown := *addr
+	if strings.HasPrefix(shown, ":") {
+		shown = "0.0.0.0" + shown
+	}
+	log.Printf("tiered-io simulator at http://%s", shown)
 	log.Fatal(srv.ListenAndServe())
 }
 

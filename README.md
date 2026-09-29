@@ -10,7 +10,7 @@ A web app for sizing an NVMe cache, an HDD tier, and a tape carousel together. I
 go run .
 ```
 
-The simulator listens on [http://127.0.0.1:8090](http://127.0.0.1:8090). Pass `-addr` to use another address.
+The simulator listens on port 8090 on all interfaces. Open [http://127.0.0.1:8090](http://127.0.0.1:8090) on this machine. Pass `-addr` to use another address.
 
 ## What it models
 
