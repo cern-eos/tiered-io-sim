@@ -83,7 +83,8 @@ func TestDefaultScenario(t *testing.T) {
 	near(t, r.Summary.HDDWriteBandwidthGBps, r.HDD.WriteDeliveredGBps/1.1, 1e-6, "usable write bw")
 	near(t, r.Summary.NVMeBandwidthGBps, 2400, 1e-9, "usable nvme bw")
 	near(t, r.Summary.TapeBandwidthGBps, 300, 1e-9, "usable tape bw")
-	near(t, r.Summary.UsableBandwidthGBps, r.Summary.NVMeBandwidthGBps+r.Summary.HDDBandwidthGBps+r.Summary.TapeBandwidthGBps, 1e-6, "usable bw")
+	near(t, r.Summary.HDDBandwidthGBps, r.HDD.DeliveredGBps, 1e-6, "hdd pipe")
+	near(t, r.Summary.UsableBandwidthGBps, r.NVMe.DeliveredGBps+r.HDD.DeliveredGBps, 1e-6, "usable bw")
 	near(t, r.Summary.HDDUsableIOPS, r.Summary.HDDBandwidthGBps/0.001, 1, "usable hdd iops")
 	near(t, r.Summary.UsableIOPS, 480*1e6+r.Summary.HDDUsableIOPS, 1, "usable iops")
 	near(t, r.Summary.CostCHF, r.Cost.TotalCHF, 1e-6, "summary cost")
@@ -252,6 +253,7 @@ func TestHybridSharesHDDNetwork(t *testing.T) {
 	near(t, r.NVMe.DeliveredGBps, 10412.5, 1e-6, "nvme on shared net")
 	near(t, r.NVMe.NetworkGBps, r.HDD.NetworkGBps, 1e-9, "same network")
 	near(t, r.HDD.DeliveredGBps, float64(74970)*DriveStreamGBps(30, 0.001, 0.27, 0.007), 1e-3, "idle cache leaves hdd")
+	near(t, r.Summary.UsableBandwidthGBps, r.HDD.NetworkGBps, 1e-6, "shared network caps nvme plus hdd")
 	if r.HDD.Binding != BindStream {
 		t.Fatalf("hdd binding %s", r.HDD.Binding)
 	}

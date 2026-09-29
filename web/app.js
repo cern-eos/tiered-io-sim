@@ -318,8 +318,8 @@ function renderSummary(r) {
   const s = r.summary;
   host.className = "summary-grid";
   host.replaceChildren(
-    summaryFigure("Usable bandwidth", bw(s.usableBandwidthGBps), `NVMe ${bw(s.nvmeBandwidthGBps)} · HDD read ${bw(s.hddReadBandwidthGBps)} · write ${bw(s.hddWriteBandwidthGBps)} · tape ${bw(s.tapeBandwidthGBps)}`),
-    summaryFigure("Usable IOPS", iopsCompact(s.usableIOPS), `NVMe ${iopsCompact(s.nvmeIOPS)} · HDD ${iopsCompact(s.hddUsableIOPS)} after layout`),
+    summaryFigure("Usable bandwidth", bw(s.usableBandwidthGBps), `NVMe ${bw(s.nvmeBandwidthGBps)} · HDD ${bw(s.hddBandwidthGBps)}, read or write`),
+    summaryFigure("Usable IOPS", iopsCompact(s.usableIOPS), `NVMe ${iopsCompact(s.nvmeIOPS)} · HDD ${iopsCompact(s.hddUsableIOPS)}, read or write`),
     summaryFigure("Total I/O IOPS", iopsCompact(s.totalIOPS), `NVMe ${iopsCompact(s.nvmeIOPS)} · HDD ${iopsCompact(s.hddIOPS)} on disk`),
     summaryFigure("Files/s", filesRate(s.hddFilesPerSec), `${trim(s.fileSizeGB, 2)} GB files · HDD read ${filesRate(s.hddReadFilesPerSec)} · write ${filesRate(s.hddWriteFilesPerSec)} · NVMe ${filesRate(s.nvmeFilesPerSec)} · tape ${filesRate(s.tapeFilesPerSec)}`),
     summaryFigure("Cost", chf(s.costCHF), "NVMe, HDD, and tape, including servers and media"),

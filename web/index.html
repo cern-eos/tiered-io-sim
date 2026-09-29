@@ -333,7 +333,7 @@
       <div class="card summary" id="panel-summary">
         <h3>Summary</h3>
         <div id="summary"></div>
-        <p class="hint">Usable bandwidth and usable IOPS are what end users receive after the HDD layout. HDD client read bandwidth is the disk read rate divided by the read multiplier, and client write bandwidth is the disk write rate divided by the write multiplier. Usable HDD IOPS divide that client bandwidth by the segment size. Total I/O IOPS still counts disk bandwidth plus rated NVMe IOPS. Tape is in the bandwidth total and not in either IOPS figure. Files per second use the configured file size. Capacity is NVMe plus HDD plus the tape library.</p>
+        <p class="hint">Usable bandwidth is delivered NVMe bandwidth plus delivered HDD bandwidth. Each is the minimum of drive bandwidth and that tier’s network. The HDD figure is one pipe: a read and a write do not run together. On a hybrid layout the shared network caps the sum. Usable HDD IOPS are that pipe divided by the segment size, plus rated NVMe IOPS. Tape is not included. Files per second use the configured file size. Capacity is NVMe plus HDD plus the tape library.</p>
       </div>
     </section>
 

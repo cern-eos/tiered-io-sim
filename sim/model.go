@@ -518,7 +518,7 @@ func evaluate(cfg Config) Result {
 		formula.Lines = append(formula.Lines, hybridLine(hdd.NetworkGBps, flow.NVMeServedGBps))
 	}
 	cost := evalCost(cfg, nvme, hdd, tape)
-	summary := evalSummary(nvme, hdd, tape, cost, cfg.Workload.FileSizeGB, flow.ReadVolume, flow.WriteVolume, cfg.Stream.SegmentMB)
+	summary := evalSummary(nvme, hdd, tape, cost, cfg.Workload.FileSizeGB, flow.ReadVolume, flow.WriteVolume, cfg.Stream.SegmentMB, cfg.Hybrid)
 	if cfg.Workload.FileSizeGB > 0 {
 		formula.Lines = append(formula.Lines, "A "+fmtNum(cfg.Workload.FileSizeGB)+" GB file gives the HDD tier "+fmtNum(summary.HDDReadFilesPerSec)+" read files/s and "+fmtNum(summary.HDDWriteFilesPerSec)+" write files/s at this stream mix.")
 	}
@@ -556,7 +556,7 @@ func filesPerSec(gbps, fileGB, volume float64) float64 {
 	return gbps / (fileGB * volume)
 }
 
-func evalSummary(nvme TierStats, hdd HDDStats, tape TapeStats, cost Cost, fileGB, readVolume, writeVolume, segmentMB float64) Summary {
+func evalSummary(nvme TierStats, hdd HDDStats, tape TapeStats, cost Cost, fileGB, readVolume, writeVolume, segmentMB float64, hybrid bool) Summary {
 	hddReadBW := 0.0
 	if readVolume > 0 {
 		hddReadBW = hdd.ReadDeliveredGBps / readVolume
@@ -580,10 +580,15 @@ func evalSummary(nvme TierStats, hdd HDDStats, tape TapeStats, cost Cost, fileGB
 		NVMeBandwidthGBps:     nvme.DeliveredGBps,
 		HDDReadBandwidthGBps:  hddReadBW,
 		HDDWriteBandwidthGBps: hddWriteBW,
-		HDDBandwidthGBps:      hddReadBW + hddWriteBW,
+		HDDBandwidthGBps:      hdd.DeliveredGBps,
 		TapeBandwidthGBps:     tape.BandwidthGBps,
 	}
-	s.UsableBandwidthGBps = s.NVMeBandwidthGBps + s.HDDBandwidthGBps + s.TapeBandwidthGBps
+	// Each tier contributes its delivered rate, already the minimum of drives
+	// and network. The HDD rate is one pipe: a read excludes a write.
+	s.UsableBandwidthGBps = s.NVMeBandwidthGBps + s.HDDBandwidthGBps
+	if hybrid && hdd.NetworkGBps > 0 && s.UsableBandwidthGBps > hdd.NetworkGBps {
+		s.UsableBandwidthGBps = hdd.NetworkGBps
+	}
 	if segmentMB > 0 {
 		s.HDDUsableIOPS = s.HDDBandwidthGBps / (segmentMB / 1000)
 	}
