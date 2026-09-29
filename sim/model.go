@@ -1,0 +1,1014 @@
+// Package sim sizes an NVMe / HDD / tape tier and applies the multi-stream
+// HDD bandwidth formula across the whole spindle tier.
+package sim
+
+import (
+	"math"
+	"sort"
+)
+
+const SecondsPerYear = 365 * 24 * 3600
+
+const (
+	BindNone    = "none"
+	BindNetwork = "network"
+	BindDrives  = "drives"
+	BindStream  = "stream"
+	BindBoth    = "both"
+)
+
+// DriveStreamGBps is the effective bandwidth of one drive serving n concurrent
+// streams. S is the contiguous segment between seeks, in GB. bwSeq is the
+// drive's sequential bandwidth in GB/s. seekSec is the reposition time charged
+// between streams.
+//
+//	BW(n) = n·S / (n·(S/BW_seq) + (n−1)·t_seek)    for n > 1
+//
+// Below one stream per drive the drive is under-subscribed, so bandwidth is
+// n·BW_seq and seeks are not charged. Zero seek time keeps the drive at
+// sequential bandwidth for any stream count at or above one.
+func DriveStreamGBps(n, segmentGB, bwSeq, seekSec float64) float64 {
+	if n <= 0 || segmentGB <= 0 || bwSeq <= 0 || math.IsNaN(n) || math.IsNaN(segmentGB) {
+		return 0
+	}
+	if n <= 1 {
+		return n * bwSeq
+	}
+	if seekSec <= 0 {
+		return bwSeq
+	}
+	den := n*(segmentGB/bwSeq) + (n-1)*seekSec
+	if den <= 0 {
+		return 0
+	}
+	return (n * segmentGB) / den
+}
+
+// DriveAsymptoteGBps is the per-drive bandwidth as the stream count grows
+// without bound: BW_seq·S / (S + BW_seq·t_seek).
+func DriveAsymptoteGBps(segmentGB, bwSeq, seekSec float64) float64 {
+	if segmentGB <= 0 || bwSeq <= 0 {
+		return 0
+	}
+	if seekSec <= 0 {
+		return bwSeq
+	}
+	return (bwSeq * segmentGB) / (segmentGB + bwSeq*seekSec)
+}
+
+// NodesForEB rounds a target capacity up to a whole node count.
+func NodesForEB(targetEB float64, drivesPerNode int, driveTB float64) int {
+	per := float64(drivesPerNode) * driveTB
+	if per <= 0 || targetEB <= 0 || math.IsNaN(targetEB) {
+		return 0
+	}
+	n := int(math.Round(targetEB * 1e6 / per))
+	if n < 1 {
+		return 1
+	}
+	return n
+}
+
+type NodeTier struct {
+	Nodes         int     `json:"nodes"`
+	NetworkGbps   float64 `json:"networkGbps"`
+	DrivesPerNode int     `json:"drivesPerNode"`
+	DriveSizeTB   float64 `json:"driveSizeTB"`
+	DriveBWGBps   float64 `json:"driveBWGBps"`
+	DriveIOPS     float64 `json:"driveIOPS"`
+}
+
+type TapeTier struct {
+	Drives      int     `json:"drives"`
+	DriveBWGBps float64 `json:"driveBWGBps"`
+	CapacityEB  float64 `json:"capacityEB"`
+}
+
+type Stream struct {
+	ReadStreams  float64 `json:"readStreams"`
+	WriteStreams float64 `json:"writeStreams"`
+	SegmentMB    float64 `json:"segmentMB"`
+	SeekMs       float64 `json:"seekMs"`
+}
+
+type Workload struct {
+	ComputeReadGBps      float64 `json:"computeReadGBps"`
+	ComputeWriteGBps     float64 `json:"computeWriteGBps"`
+	NVMeHitRate          float64 `json:"nvmeHitRate"`
+	WorkingSetPB         float64 `json:"workingSetPB"`
+	ReserveFraction      float64 `json:"reserveFraction"`
+	ArchiveEBPerYear     float64 `json:"archiveEBPerYear"`
+	RecallGBps           float64 `json:"recallGBps"`
+	BaselineEB           float64 `json:"baselineEB"`
+	ObservedTBpsPerEB    float64 `json:"observedTBpsPerEB"`
+	PrefetchHorizonHours float64 `json:"prefetchHorizonHours"`
+}
+
+type Prices struct {
+	NodeCHF      float64 `json:"nodeCHF"`
+	NVMeCHFPerTB float64 `json:"nvmeCHFPerTB"`
+	HDDCHFPerTB  float64 `json:"hddCHFPerTB"`
+	TapeDriveCHF float64 `json:"tapeDriveCHF"`
+	TapeCHFPerTB float64 `json:"tapeCHFPerTB"`
+}
+
+type Config struct {
+	NVMe     NodeTier `json:"nvme"`
+	HDD      NodeTier `json:"hdd"`
+	Tape     TapeTier `json:"tape"`
+	Stream   Stream   `json:"stream"`
+	Workload Workload `json:"workload"`
+	Prices   Prices   `json:"prices"`
+}
+
+func DefaultConfig() Config {
+	return Config{
+		NVMe: NodeTier{
+			Nodes: 48, NetworkGbps: 400, DrivesPerNode: 10,
+			DriveSizeTB: 7.68, DriveBWGBps: 6, DriveIOPS: 1_000_000,
+		},
+		HDD: NodeTier{
+			Nodes: 833, NetworkGbps: 100, DrivesPerNode: 90,
+			DriveSizeTB: 20, DriveBWGBps: 0.28, DriveIOPS: 140,
+		},
+		Tape: TapeTier{Drives: 750, DriveBWGBps: 0.4, CapacityEB: 4},
+		Stream: Stream{
+			ReadStreams:  449820,
+			WriteStreams: 149940,
+			SegmentMB:    1,
+			SeekMs:       7,
+		},
+		Workload: Workload{
+			ComputeReadGBps:      1000,
+			ComputeWriteGBps:     100,
+			NVMeHitRate:          0,
+			WorkingSetPB:         900,
+			ReserveFraction:      0.10,
+			ArchiveEBPerYear:     1,
+			RecallGBps:           100,
+			BaselineEB:           2.5,
+			ObservedTBpsPerEB:    1,
+			PrefetchHorizonHours: 24,
+		},
+		Prices: Prices{
+			NodeCHF:      10_000,
+			NVMeCHFPerTB: 200,
+			HDDCHFPerTB:  20,
+			TapeDriveCHF: 25_000,
+			TapeCHFPerTB: 10,
+		},
+	}
+}
+
+type TierStats struct {
+	Nodes              int     `json:"nodes"`
+	Drives             int     `json:"drives"`
+	CapacityTB         float64 `json:"capacityTB"`
+	CapacityEB         float64 `json:"capacityEB"`
+	NetworkPerNodeGBps float64 `json:"networkPerNodeGBps"`
+	NetworkGBps        float64 `json:"networkGBps"`
+	DriveAggregateGBps float64 `json:"driveAggregateGBps"`
+	DeliveredGBps      float64 `json:"deliveredGBps"`
+	Binding            string  `json:"binding"`
+	Limit              string  `json:"limit"`
+	AggregateIOPS      float64 `json:"aggregateIOPS"`
+	NetworkGbps        float64 `json:"networkGbps"`
+}
+
+type HDDStats struct {
+	TierStats
+	StreamPerDriveGBps     float64 `json:"streamPerDriveGBps"`
+	StreamAggregateGBps    float64 `json:"streamAggregateGBps"`
+	SequentialPerDriveGBps float64 `json:"sequentialPerDriveGBps"`
+	Efficiency             float64 `json:"efficiency"`
+	Degradation            float64 `json:"degradation"`
+	StreamsPerDrive        float64 `json:"streamsPerDrive"`
+	ReadStreams            float64 `json:"readStreams"`
+	WriteStreams           float64 `json:"writeStreams"`
+	ReadDeliveredGBps      float64 `json:"readDeliveredGBps"`
+	WriteDeliveredGBps     float64 `json:"writeDeliveredGBps"`
+	FormulaIOPSPerDrive    float64 `json:"formulaIOPSPerDrive"`
+	ObservedGBps           float64 `json:"observedGBps"`
+	ImpliedTBpsPerEB       float64 `json:"impliedTBpsPerEB"`
+	BaselineEB             float64 `json:"baselineEB"`
+	ReductionEB            float64 `json:"reductionEB"`
+	ReductionFraction      float64 `json:"reductionFraction"`
+	Mode                   string  `json:"mode"`
+}
+
+type TapeStats struct {
+	Drives        int     `json:"drives"`
+	PerDriveGBps  float64 `json:"perDriveGBps"`
+	BandwidthGBps float64 `json:"bandwidthGBps"`
+	CapacityEB    float64 `json:"capacityEB"`
+	MaxEBPerYear  float64 `json:"maxEBPerYear"`
+	MaxPBPerDay   float64 `json:"maxPBPerDay"`
+	MaxPBPerHour  float64 `json:"maxPBPerHour"`
+}
+
+type Flow struct {
+	ComputeReadGBps      float64 `json:"computeReadGBps"`
+	ComputeWriteGBps     float64 `json:"computeWriteGBps"`
+	NVMeHitRate          float64 `json:"nvmeHitRate"`
+	PrefetchHours        float64 `json:"prefetchHours"`
+	ArchiveGBps          float64 `json:"archiveGBps"`
+	ArchiveFraction      float64 `json:"archiveFraction"`
+	RecallGBps           float64 `json:"recallGBps"`
+	RecallEBPerYear      float64 `json:"recallEBPerYear"`
+	TapeDemandGBps       float64 `json:"tapeDemandGBps"`
+	TapeSlackGBps        float64 `json:"tapeSlackGBps"`
+	RecallPBPerHour      float64 `json:"recallPBPerHour"`
+	RecallPBPerDay       float64 `json:"recallPBPerDay"`
+	PrefetchPB           float64 `json:"prefetchPB"`
+	NVMeHitDemandGBps    float64 `json:"nvmeHitDemandGBps"`
+	NVMeServedGBps       float64 `json:"nvmeServedGBps"`
+	HDDComputeReadGBps   float64 `json:"hddComputeReadGBps"`
+	HDDComputeWriteGBps  float64 `json:"hddComputeWriteGBps"`
+	HDDDemandGBps        float64 `json:"hddDemandGBps"`
+	HDDSlackGBps         float64 `json:"hddSlackGBps"`
+	ObservedSlackGBps    float64 `json:"observedSlackGBps"`
+	ObservedEnabled      bool    `json:"observedEnabled"`
+	WorkingSetEB         float64 `json:"workingSetEB"`
+	WorkingSetPB         float64 `json:"workingSetPB"`
+	ReserveEB            float64 `json:"reserveEB"`
+	ReserveFraction      float64 `json:"reserveFraction"`
+	FreeEB               float64 `json:"freeEB"`
+	FreePB               float64 `json:"freePB"`
+	WorkingSetFits       bool    `json:"workingSetFits"`
+	StageWorkingSetHours float64 `json:"stageWorkingSetHours"`
+	TapeToHardware       float64 `json:"tapeToHardware"`
+	TapeToObserved       float64 `json:"tapeToObserved"`
+	ComputeDemandGBps    float64 `json:"computeDemandGBps"`
+}
+
+type Formula struct {
+	Streams       float64  `json:"streams"`
+	SegmentMB     float64  `json:"segmentMB"`
+	SeekMs        float64  `json:"seekMs"`
+	SeqMBps       float64  `json:"seqMBps"`
+	PerDriveMBps  float64  `json:"perDriveMBps"`
+	AsymptoteMBps float64  `json:"asymptoteMBps"`
+	Drives        int      `json:"drives"`
+	Nodes         int      `json:"nodes"`
+	NetworkGbps   float64  `json:"networkGbps"`
+	SpindleGBps   float64  `json:"spindleGBps"`
+	NetworkGBps   float64  `json:"networkGBps"`
+	DeliveredGBps float64  `json:"deliveredGBps"`
+	Binding       string   `json:"binding"`
+	Mode          string   `json:"mode"`
+	Efficiency    float64  `json:"efficiency"`
+	Lines         []string `json:"lines"`
+}
+
+type CurvePoint struct {
+	StreamsPerDrive float64 `json:"streamsPerDrive"`
+	TotalStreams    float64 `json:"totalStreams"`
+	PerDriveGBps    float64 `json:"perDriveGBps"`
+	SpindleGBps     float64 `json:"spindleGBps"`
+	DeliveredGBps   float64 `json:"deliveredGBps"`
+	ReadGBps        float64 `json:"readGBps"`
+	WriteGBps       float64 `json:"writeGBps"`
+	Degradation     float64 `json:"degradation"`
+	NetworkGBps     float64 `json:"networkGBps"`
+	ObservedGBps    float64 `json:"observedGBps"`
+}
+
+type SweepPoint struct {
+	TargetEB          float64 `json:"targetEB"`
+	Custom            bool    `json:"custom"`
+	Active            bool    `json:"active"`
+	Nodes             int     `json:"nodes"`
+	CapacityEB        float64 `json:"capacityEB"`
+	DeliveredGBps     float64 `json:"deliveredGBps"`
+	ObservedGBps      float64 `json:"observedGBps"`
+	ObservedEnabled   bool    `json:"observedEnabled"`
+	TapeToHardware    float64 `json:"tapeToHardware"`
+	TapeToObserved    float64 `json:"tapeToObserved"`
+	HardwareSlackGBps float64 `json:"hardwareSlackGBps"`
+	ObservedSlackGBps float64 `json:"observedSlackGBps"`
+	WorkingSetFits    bool    `json:"workingSetFits"`
+	NVMeCHF           float64 `json:"nvmeCHF"`
+	HDDCHF            float64 `json:"hddCHF"`
+	TapeCHF           float64 `json:"tapeCHF"`
+	CostCHF           float64 `json:"costCHF"`
+}
+
+type Knee struct {
+	HardwareTargetEB float64 `json:"hardwareTargetEB"`
+	HardwareOK       bool    `json:"hardwareOK"`
+	ObservedTargetEB float64 `json:"observedTargetEB"`
+	ObservedOK       bool    `json:"observedOK"`
+}
+
+type Bounds struct {
+	CapacityFloorEB   float64 `json:"capacityFloorEB"`
+	HardwareComputeEB float64 `json:"hardwareComputeEB"`
+	HardwareComputeOK bool    `json:"hardwareComputeOK"`
+	ObservedComputeEB float64 `json:"observedComputeEB"`
+	ObservedComputeOK bool    `json:"observedComputeOK"`
+	HardwareBudgetEB  float64 `json:"hardwareBudgetEB"`
+	HardwareBudgetOK  bool    `json:"hardwareBudgetOK"`
+	ObservedBudgetEB  float64 `json:"observedBudgetEB"`
+	ObservedBudgetOK  bool    `json:"observedBudgetOK"`
+	HardwareMinEB     float64 `json:"hardwareMinEB"`
+	HardwareMinOK     bool    `json:"hardwareMinOK"`
+	ObservedMinEB     float64 `json:"observedMinEB"`
+	ObservedMinOK     bool    `json:"observedMinOK"`
+	ObservedEnabled   bool    `json:"observedEnabled"`
+	ObservedTBpsPerEB float64 `json:"observedTBpsPerEB"`
+	ReserveFraction   float64 `json:"reserveFraction"`
+}
+
+type Verdict struct {
+	Tone  string   `json:"tone"`
+	Title string   `json:"title"`
+	Lines []string `json:"lines"`
+}
+
+type Cost struct {
+	NVMeNodesCHF   float64 `json:"nvmeNodesCHF"`
+	NVMeMediaCHF   float64 `json:"nvmeMediaCHF"`
+	HDDNodesCHF    float64 `json:"hddNodesCHF"`
+	HDDMediaCHF    float64 `json:"hddMediaCHF"`
+	TapeDrivesCHF  float64 `json:"tapeDrivesCHF"`
+	TapeMediaCHF   float64 `json:"tapeMediaCHF"`
+	NVMeCHF        float64 `json:"nvmeCHF"`
+	HDDCHF         float64 `json:"hddCHF"`
+	TapeCHF        float64 `json:"tapeCHF"`
+	TotalCHF       float64 `json:"totalCHF"`
+	BaselineNodes  int     `json:"baselineNodes"`
+	BaselineHDDCHF float64 `json:"baselineHDDCHF"`
+	HDDDeltaCHF    float64 `json:"hddDeltaCHF"`
+}
+
+type Result struct {
+	NVMe     TierStats    `json:"nvme"`
+	HDD      HDDStats     `json:"hdd"`
+	Tape     TapeStats    `json:"tape"`
+	Flow     Flow         `json:"flow"`
+	Formula  Formula      `json:"formula"`
+	Curve    []CurvePoint `json:"curve"`
+	Sweep    []SweepPoint `json:"sweep"`
+	Knee     Knee         `json:"knee"`
+	Bounds   Bounds       `json:"bounds"`
+	Cost     Cost         `json:"cost"`
+	Verdict  Verdict      `json:"verdict"`
+	Warnings []string     `json:"warnings"`
+}
+
+func Evaluate(cfg Config) Result {
+	warnings := sanitize(&cfg)
+	r := evaluate(cfg)
+	r.Sweep = sweep(cfg)
+	r.Knee = kneeFrom(r.Sweep)
+	r.Verdict = buildVerdict(r)
+	r.Warnings = warnings
+	return r
+}
+
+func evaluate(cfg Config) Result {
+	nvme := evalNode(cfg.NVMe)
+	hdd := evalHDD(cfg.HDD, cfg.Stream, cfg.Workload)
+	tape := evalTape(cfg.Tape)
+	flow := evalFlow(cfg.Workload, nvme, hdd, tape)
+	bounds := evalBounds(hdd, flow, cfg.Workload)
+	formula := evalFormula(cfg, hdd)
+	return Result{
+		NVMe:    nvme,
+		HDD:     hdd,
+		Tape:    tape,
+		Flow:    flow,
+		Bounds:  bounds,
+		Cost:    evalCost(cfg, nvme, hdd, tape),
+		Formula: formula,
+		Curve:   evalCurve(cfg, hdd.CapacityEB),
+	}
+}
+
+func evalCost(cfg Config, nvme TierStats, hdd HDDStats, tape TapeStats) Cost {
+	p := cfg.Prices
+	c := Cost{
+		NVMeNodesCHF:  float64(nvme.Nodes) * p.NodeCHF,
+		NVMeMediaCHF:  nvme.CapacityTB * p.NVMeCHFPerTB,
+		HDDNodesCHF:   float64(hdd.Nodes) * p.NodeCHF,
+		HDDMediaCHF:   hdd.CapacityTB * p.HDDCHFPerTB,
+		TapeDrivesCHF: float64(tape.Drives) * p.TapeDriveCHF,
+		TapeMediaCHF:  tape.CapacityEB * 1e6 * p.TapeCHFPerTB,
+	}
+	c.NVMeCHF = c.NVMeNodesCHF + c.NVMeMediaCHF
+	c.HDDCHF = c.HDDNodesCHF + c.HDDMediaCHF
+	c.TapeCHF = c.TapeDrivesCHF + c.TapeMediaCHF
+	c.TotalCHF = c.NVMeCHF + c.HDDCHF + c.TapeCHF
+	if cfg.Workload.BaselineEB > 0 {
+		nodes := NodesForEB(cfg.Workload.BaselineEB, cfg.HDD.DrivesPerNode, cfg.HDD.DriveSizeTB)
+		capTB := float64(nodes*cfg.HDD.DrivesPerNode) * cfg.HDD.DriveSizeTB
+		c.BaselineNodes = nodes
+		c.BaselineHDDCHF = float64(nodes)*p.NodeCHF + capTB*p.HDDCHFPerTB
+		c.HDDDeltaCHF = c.HDDCHF - c.BaselineHDDCHF
+	}
+	return c
+}
+
+func evalNode(t NodeTier) TierStats {
+	drives := t.Nodes * t.DrivesPerNode
+	if t.Nodes < 0 || t.DrivesPerNode < 0 {
+		drives = 0
+	}
+	capTB := float64(drives) * t.DriveSizeTB
+	netPer := t.NetworkGbps / 8
+	net := float64(t.Nodes) * netPer
+	driveAgg := float64(drives) * t.DriveBWGBps
+	delivered, binding := clipBandwidth(driveAgg, net, BindDrives, BindNetwork)
+	return TierStats{
+		Nodes:              t.Nodes,
+		Drives:             drives,
+		CapacityTB:         capTB,
+		CapacityEB:         capTB / 1e6,
+		NetworkPerNodeGBps: netPer,
+		NetworkGBps:        net,
+		DriveAggregateGBps: driveAgg,
+		DeliveredGBps:      delivered,
+		Binding:            binding,
+		Limit:              limitClause(binding, ""),
+		AggregateIOPS:      float64(drives) * t.DriveIOPS,
+		NetworkGbps:        t.NetworkGbps,
+	}
+}
+
+func streamsPerDrive(s Stream, drives int) float64 {
+	if drives <= 0 {
+		return 0
+	}
+	return (s.ReadStreams + s.WriteStreams) / float64(drives)
+}
+
+func splitBandwidth(readStreams, writeStreams, delivered float64) (readBW, writeBW float64) {
+	total := readStreams + writeStreams
+	if total <= 0 || delivered <= 0 {
+		return 0, 0
+	}
+	readBW = delivered * readStreams / total
+	return readBW, delivered - readBW
+}
+
+func seekDegradation(n, perDrive, sequential float64) float64 {
+	if n <= 1 || sequential <= 0 || perDrive <= 0 {
+		return 0
+	}
+	lost := 1 - perDrive/sequential
+	if lost < 0 {
+		return 0
+	}
+	if lost > 1 {
+		return 1
+	}
+	return lost
+}
+
+func evalHDD(t NodeTier, s Stream, wl Workload) HDDStats {
+	base := evalNode(t)
+	n := streamsPerDrive(s, base.Drives)
+	mode := streamMode(n, s.SeekMs/1000)
+	per := DriveStreamGBps(n, s.SegmentMB/1000, t.DriveBWGBps, s.SeekMs/1000)
+	agg := float64(base.Drives) * per
+	delivered, binding := clipBandwidth(agg, base.NetworkGBps, BindStream, BindNetwork)
+	base.DeliveredGBps = delivered
+	base.Binding = binding
+	base.Limit = limitClause(binding, mode)
+	eff := 0.0
+	if t.DriveBWGBps > 0 {
+		eff = per / t.DriveBWGBps
+	}
+	readBW, writeBW := splitBandwidth(s.ReadStreams, s.WriteStreams, delivered)
+	formulaIOPS := 0.0
+	if s.SegmentMB > 0 {
+		formulaIOPS = per / (s.SegmentMB / 1000)
+	}
+	observed := 0.0
+	if wl.ObservedTBpsPerEB > 0 {
+		observed = base.CapacityEB * wl.ObservedTBpsPerEB * 1000
+	}
+	implied := 0.0
+	if base.CapacityEB > 0 {
+		implied = (delivered / 1000) / base.CapacityEB
+	}
+	reduction := wl.BaselineEB - base.CapacityEB
+	frac := 0.0
+	if wl.BaselineEB > 0 {
+		frac = reduction / wl.BaselineEB
+	}
+	return HDDStats{
+		TierStats:              base,
+		StreamPerDriveGBps:     per,
+		StreamAggregateGBps:    agg,
+		SequentialPerDriveGBps: t.DriveBWGBps,
+		Efficiency:             eff,
+		Degradation:            seekDegradation(n, per, t.DriveBWGBps),
+		StreamsPerDrive:        n,
+		ReadStreams:            s.ReadStreams,
+		WriteStreams:           s.WriteStreams,
+		ReadDeliveredGBps:      readBW,
+		WriteDeliveredGBps:     writeBW,
+		FormulaIOPSPerDrive:    formulaIOPS,
+		ObservedGBps:           observed,
+		ImpliedTBpsPerEB:       implied,
+		BaselineEB:             wl.BaselineEB,
+		ReductionEB:            reduction,
+		ReductionFraction:      frac,
+		Mode:                   mode,
+	}
+}
+
+func evalTape(t TapeTier) TapeStats {
+	bw := float64(t.Drives) * t.DriveBWGBps
+	return TapeStats{
+		Drives:        t.Drives,
+		PerDriveGBps:  t.DriveBWGBps,
+		BandwidthGBps: bw,
+		CapacityEB:    t.CapacityEB,
+		MaxEBPerYear:  gbpsToEBPerYear(bw),
+		MaxPBPerDay:   gbpsToPBPerDay(bw),
+		MaxPBPerHour:  gbpsToPBPerHour(bw),
+	}
+}
+
+func evalFlow(wl Workload, nvme TierStats, hdd HDDStats, tape TapeStats) Flow {
+	archive := ebPerYearToGBps(wl.ArchiveEBPerYear)
+	recall := wl.RecallGBps
+	hitDemand := wl.ComputeReadGBps * wl.NVMeHitRate
+	served := math.Min(hitDemand, nvme.DeliveredGBps)
+	hddRead := wl.ComputeReadGBps - served
+	if hddRead < 0 {
+		hddRead = 0
+	}
+	demand := hddRead + wl.ComputeWriteGBps + archive + recall
+	workingSetEB := wl.WorkingSetPB / 1000
+	reserveEB := hdd.CapacityEB * wl.ReserveFraction
+	freeEB := hdd.CapacityEB - workingSetEB - reserveEB
+	usable := hdd.CapacityEB * (1 - wl.ReserveFraction)
+	fits := workingSetEB <= usable+1e-9
+	observedEnabled := wl.ObservedTBpsPerEB > 0
+	observedSlack := 0.0
+	if observedEnabled {
+		observedSlack = hdd.ObservedGBps - demand
+	}
+	pbPerHour := gbpsToPBPerHour(recall)
+	stageHours := 0.0
+	if pbPerHour > 0 {
+		stageHours = wl.WorkingSetPB / pbPerHour
+	}
+	archFrac := 0.0
+	if tape.BandwidthGBps > 0 {
+		archFrac = archive / tape.BandwidthGBps
+	}
+	toHW := 0.0
+	if hdd.DeliveredGBps > 0 {
+		toHW = tape.BandwidthGBps / hdd.DeliveredGBps
+	}
+	toObs := 0.0
+	if hdd.ObservedGBps > 0 {
+		toObs = tape.BandwidthGBps / hdd.ObservedGBps
+	}
+	return Flow{
+		ComputeReadGBps:      wl.ComputeReadGBps,
+		ComputeWriteGBps:     wl.ComputeWriteGBps,
+		NVMeHitRate:          wl.NVMeHitRate,
+		PrefetchHours:        wl.PrefetchHorizonHours,
+		ArchiveGBps:          archive,
+		ArchiveFraction:      archFrac,
+		RecallGBps:           recall,
+		RecallEBPerYear:      gbpsToEBPerYear(recall),
+		TapeDemandGBps:       archive + recall,
+		TapeSlackGBps:        tape.BandwidthGBps - archive - recall,
+		RecallPBPerHour:      pbPerHour,
+		RecallPBPerDay:       gbpsToPBPerDay(recall),
+		PrefetchPB:           pbPerHour * wl.PrefetchHorizonHours,
+		NVMeHitDemandGBps:    hitDemand,
+		NVMeServedGBps:       served,
+		HDDComputeReadGBps:   hddRead,
+		HDDComputeWriteGBps:  wl.ComputeWriteGBps,
+		HDDDemandGBps:        demand,
+		HDDSlackGBps:         hdd.DeliveredGBps - demand,
+		ObservedSlackGBps:    observedSlack,
+		ObservedEnabled:      observedEnabled,
+		WorkingSetEB:         workingSetEB,
+		WorkingSetPB:         wl.WorkingSetPB,
+		ReserveEB:            reserveEB,
+		ReserveFraction:      wl.ReserveFraction,
+		FreeEB:               freeEB,
+		FreePB:               freeEB * 1000,
+		WorkingSetFits:       fits,
+		StageWorkingSetHours: stageHours,
+		TapeToHardware:       toHW,
+		TapeToObserved:       toObs,
+		ComputeDemandGBps:    hddRead + wl.ComputeWriteGBps,
+	}
+}
+
+func evalBounds(hdd HDDStats, flow Flow, wl Workload) Bounds {
+	floor := 0.0
+	if wl.ReserveFraction < 1 {
+		floor = flow.WorkingSetEB / (1 - wl.ReserveFraction)
+	}
+	hwCompute, hwComputeOK := scaleFloor(hdd.CapacityEB, hdd.DeliveredGBps, flow.ComputeDemandGBps)
+	hwBudget, hwBudgetOK := scaleFloor(hdd.CapacityEB, hdd.DeliveredGBps, flow.HDDDemandGBps)
+	obsCompute, obsComputeOK := 0.0, false
+	obsBudget, obsBudgetOK := 0.0, false
+	if wl.ObservedTBpsPerEB > 0 {
+		per := wl.ObservedTBpsPerEB * 1000
+		obsCompute, obsComputeOK = scaleFloor(1, per, flow.ComputeDemandGBps)
+		obsBudget, obsBudgetOK = scaleFloor(1, per, flow.HDDDemandGBps)
+	}
+	hwMin, hwMinOK := combineFloor(floor, hwBudget, hwBudgetOK, flow.HDDDemandGBps)
+	obsMin, obsMinOK := 0.0, false
+	if wl.ObservedTBpsPerEB > 0 {
+		obsMin, obsMinOK = combineFloor(floor, obsBudget, obsBudgetOK, flow.HDDDemandGBps)
+	}
+	return Bounds{
+		CapacityFloorEB:   floor,
+		HardwareComputeEB: hwCompute,
+		HardwareComputeOK: hwComputeOK,
+		ObservedComputeEB: obsCompute,
+		ObservedComputeOK: obsComputeOK,
+		HardwareBudgetEB:  hwBudget,
+		HardwareBudgetOK:  hwBudgetOK,
+		ObservedBudgetEB:  obsBudget,
+		ObservedBudgetOK:  obsBudgetOK,
+		HardwareMinEB:     hwMin,
+		HardwareMinOK:     hwMinOK,
+		ObservedMinEB:     obsMin,
+		ObservedMinOK:     obsMinOK,
+		ObservedEnabled:   wl.ObservedTBpsPerEB > 0,
+		ObservedTBpsPerEB: wl.ObservedTBpsPerEB,
+		ReserveFraction:   wl.ReserveFraction,
+	}
+}
+
+func scaleFloor(capacityEB, delivered, demand float64) (float64, bool) {
+	if demand <= 0 {
+		return 0, true
+	}
+	if delivered <= 0 || capacityEB <= 0 {
+		return 0, false
+	}
+	return capacityEB * demand / delivered, true
+}
+
+func combineFloor(capacityFloor, budget float64, budgetOK bool, demand float64) (float64, bool) {
+	if demand > 0 && !budgetOK {
+		return 0, false
+	}
+	if !budgetOK {
+		return capacityFloor, true
+	}
+	return math.Max(capacityFloor, budget), true
+}
+
+func evalFormula(cfg Config, hdd HDDStats) Formula {
+	s := cfg.Stream
+	mode := hdd.Mode
+	asymMBps := DriveAsymptoteGBps(s.SegmentMB/1000, cfg.HDD.DriveBWGBps, s.SeekMs/1000) * 1000
+	f := Formula{
+		Streams:       hdd.StreamsPerDrive,
+		SegmentMB:     s.SegmentMB,
+		SeekMs:        s.SeekMs,
+		SeqMBps:       cfg.HDD.DriveBWGBps * 1000,
+		PerDriveMBps:  hdd.StreamPerDriveGBps * 1000,
+		AsymptoteMBps: asymMBps,
+		Drives:        hdd.Drives,
+		Nodes:         hdd.Nodes,
+		NetworkGbps:   cfg.HDD.NetworkGbps,
+		SpindleGBps:   hdd.StreamAggregateGBps,
+		NetworkGBps:   hdd.NetworkGBps,
+		DeliveredGBps: hdd.DeliveredGBps,
+		Binding:       hdd.Binding,
+		Mode:          mode,
+		Efficiency:    hdd.Efficiency,
+	}
+	f.Lines = formulaLines(f, hdd)
+	return f
+}
+
+func formulaLines(f Formula, hdd HDDStats) []string {
+	if f.Mode == "idle" || f.SeqMBps <= 0 || f.SegmentMB <= 0 {
+		return []string{"Segment size, sequential bandwidth, or stream count is zero, so the stream model delivers nothing."}
+	}
+	var lines []string
+	switch f.Mode {
+	case "partial":
+		lines = append(lines, "n = "+fmtNum(f.Streams)+" is below one stream per drive, so BW = "+fmtNum(f.Streams)+" × "+fmtMBps(f.SeqMBps)+" = "+fmtMBps(f.PerDriveMBps)+" per drive. Seeks are not charged.")
+	case "sequential":
+		lines = append(lines, "n = "+fmtNum(f.Streams)+", so each active drive streams at "+fmtMBps(f.SeqMBps)+". Seeks are not charged.")
+	default:
+		lines = append(lines,
+			"BW("+fmtNum(f.Streams)+") = "+fmtNum(f.Streams)+" × "+fmtMB(f.SegmentMB)+
+				" / ("+fmtNum(f.Streams)+" × ("+fmtMB(f.SegmentMB)+" / "+fmtMBps(f.SeqMBps)+") + ("+fmtNum(f.Streams)+" − 1) × "+fmtNum(f.SeekMs)+" ms) = "+
+				fmtMBps(f.PerDriveMBps)+" per drive, "+fmtPct(f.Efficiency)+" of sequential.")
+	}
+	lines = append(lines,
+		fmtInt(int(math.Round(hdd.ReadStreams)))+" read streams and "+fmtInt(int(math.Round(hdd.WriteStreams)))+" write streams average "+fmtNum(hdd.StreamsPerDrive)+" per drive. Read streams get "+fmtBW(hdd.ReadDeliveredGBps)+" and write streams get "+fmtBW(hdd.WriteDeliveredGBps)+".")
+	if hdd.Degradation >= 0.0005 {
+		lines = append(lines, "Seek contention removes "+fmtPct(hdd.Degradation)+" of sequential bandwidth on each drive.")
+	}
+	lines = append(lines,
+		fmtInt(f.Drives)+" drives produce "+fmtBW(f.SpindleGBps)+". The "+fmtInt(f.Nodes)+"-node "+fmtNum(f.NetworkGbps)+" GbE network allows "+fmtBW(f.NetworkGBps)+". Delivered bandwidth is "+fmtBW(f.DeliveredGBps)+", limited by "+hdd.Limit+".")
+	if f.Mode == "contended" {
+		lines = append(lines, "As the stream count grows, one drive approaches "+fmtMBps(f.AsymptoteMBps)+".")
+	}
+	if hdd.CapacityEB > 0 {
+		line := "Across this capacity the hardware model implies " + fmtNum(hdd.ImpliedTBpsPerEB) + " TB/s per EB."
+		if hdd.ObservedGBps > 0 {
+			line += " Observed scaling assigns " + fmtBW(hdd.ObservedGBps) + "."
+		}
+		lines = append(lines, line)
+	}
+	return lines
+}
+
+func evalCurve(cfg Config, capacityEB float64) []CurvePoint {
+	drives := cfg.HDD.Nodes * cfg.HDD.DrivesPerNode
+	n := streamsPerDrive(cfg.Stream, drives)
+	if n < 1 {
+		n = 1
+	}
+	hi := math.Max(64, n)
+	xs := make([]float64, 0, 70)
+	for i := 0; i <= 63; i++ {
+		xs = append(xs, 1+(hi-1)*float64(i)/63)
+	}
+	xs = appendUnique(xs, streamsPerDrive(cfg.Stream, drives))
+	sort.Float64s(xs)
+	net := float64(cfg.HDD.Nodes) * cfg.HDD.NetworkGbps / 8
+	observed := 0.0
+	if cfg.Workload.ObservedTBpsPerEB > 0 {
+		observed = capacityEB * cfg.Workload.ObservedTBpsPerEB * 1000
+	}
+	seg := cfg.Stream.SegmentMB / 1000
+	seek := cfg.Stream.SeekMs / 1000
+	pts := make([]CurvePoint, 0, len(xs))
+	for _, x := range xs {
+		if x < 0 {
+			continue
+		}
+		per := DriveStreamGBps(x, seg, cfg.HDD.DriveBWGBps, seek)
+		spindle := float64(drives) * per
+		delivered, _ := clipBandwidth(spindle, net, BindStream, BindNetwork)
+		readBW, writeBW := splitBandwidth(cfg.Stream.ReadStreams, cfg.Stream.WriteStreams, delivered)
+		pts = append(pts, CurvePoint{
+			StreamsPerDrive: x,
+			TotalStreams:    x * float64(drives),
+			PerDriveGBps:    per,
+			SpindleGBps:     spindle,
+			DeliveredGBps:   delivered,
+			ReadGBps:        readBW,
+			WriteGBps:       writeBW,
+			Degradation:     seekDegradation(x, per, cfg.HDD.DriveBWGBps),
+			NetworkGBps:     net,
+			ObservedGBps:    observed,
+		})
+	}
+	return pts
+}
+
+var sweepTargets = []float64{2.5, 2, 1.5, 1.25, 1, 0.75, 0.5}
+
+func sweep(cfg Config) []SweepPoint {
+	pts := make([]SweepPoint, 0, len(sweepTargets)+1)
+	seen := map[int]bool{}
+	for _, target := range sweepTargets {
+		nodes := NodesForEB(target, cfg.HDD.DrivesPerNode, cfg.HDD.DriveSizeTB)
+		if nodes == 0 || seen[nodes] {
+			continue
+		}
+		seen[nodes] = true
+		c := cfg
+		c.HDD.Nodes = nodes
+		st := evaluate(c)
+		pts = append(pts, makeSweep(target, false, cfg.HDD.Nodes == nodes, st))
+	}
+	if cfg.HDD.Nodes > 0 && !seen[cfg.HDD.Nodes] {
+		st := evaluate(cfg)
+		pts = append(pts, makeSweep(st.HDD.CapacityEB, true, true, st))
+	}
+	sort.Slice(pts, func(i, j int) bool { return pts[i].CapacityEB > pts[j].CapacityEB })
+	return pts
+}
+
+func makeSweep(target float64, custom, active bool, st Result) SweepPoint {
+	return SweepPoint{
+		TargetEB:          target,
+		Custom:            custom,
+		Active:            active,
+		Nodes:             st.HDD.Nodes,
+		CapacityEB:        st.HDD.CapacityEB,
+		DeliveredGBps:     st.HDD.DeliveredGBps,
+		ObservedGBps:      st.HDD.ObservedGBps,
+		ObservedEnabled:   st.Flow.ObservedEnabled,
+		TapeToHardware:    st.Flow.TapeToHardware,
+		TapeToObserved:    st.Flow.TapeToObserved,
+		HardwareSlackGBps: st.Flow.HDDSlackGBps,
+		ObservedSlackGBps: st.Flow.ObservedSlackGBps,
+		WorkingSetFits:    st.Flow.WorkingSetFits,
+		NVMeCHF:           st.Cost.NVMeCHF,
+		HDDCHF:            st.Cost.HDDCHF,
+		TapeCHF:           st.Cost.TapeCHF,
+		CostCHF:           st.Cost.TotalCHF,
+	}
+}
+
+func kneeFrom(pts []SweepPoint) Knee {
+	hw, hwOK := smallestCovering(pts, false)
+	obs, obsOK := smallestCovering(pts, true)
+	return Knee{HardwareTargetEB: hw, HardwareOK: hwOK, ObservedTargetEB: obs, ObservedOK: obsOK}
+}
+
+func smallestCovering(pts []SweepPoint, observed bool) (float64, bool) {
+	if observed {
+		enabled := false
+		for _, p := range pts {
+			if !p.Custom && p.ObservedEnabled {
+				enabled = true
+				break
+			}
+		}
+		if !enabled {
+			return 0, false
+		}
+	}
+	best := math.Inf(1)
+	target := 0.0
+	found := false
+	for _, p := range pts {
+		if p.Custom {
+			continue
+		}
+		slack := p.HardwareSlackGBps
+		if observed {
+			slack = p.ObservedSlackGBps
+		}
+		if p.WorkingSetFits && slack >= -1e-4 && p.CapacityEB < best {
+			best = p.CapacityEB
+			target = p.TargetEB
+			found = true
+		}
+	}
+	return target, found
+}
+
+func clipBandwidth(primary, network float64, primaryName, networkName string) (float64, string) {
+	switch {
+	case primary <= 0 && network <= 0:
+		return 0, BindNone
+	case primary <= 0:
+		return 0, primaryName
+	case network <= 0:
+		return 0, networkName
+	}
+	diff := math.Abs(primary - network)
+	if diff <= 1e-6*math.Max(1, math.Max(primary, network)) {
+		return primary, BindBoth
+	}
+	if primary < network {
+		return primary, primaryName
+	}
+	return network, networkName
+}
+
+func streamMode(n, seekSec float64) string {
+	switch {
+	case n <= 0:
+		return "idle"
+	case n < 1:
+		return "partial"
+	case seekSec <= 0 || n <= 1:
+		return "sequential"
+	default:
+		return "contended"
+	}
+}
+
+func limitClause(binding, mode string) string {
+	switch binding {
+	case BindNetwork:
+		return "the node network"
+	case BindBoth:
+		if mode == "contended" {
+			return "seek contention and the node network"
+		}
+		return "drive bandwidth and the node network"
+	case BindNone:
+		return "an empty tier"
+	case BindDrives:
+		return "drive bandwidth"
+	case BindStream:
+		switch mode {
+		case "partial":
+			return "having fewer streams than drives"
+		case "sequential":
+			return "sequential drive bandwidth"
+		default:
+			return "seek contention"
+		}
+	default:
+		return binding
+	}
+}
+
+func gbpsToPBPerDay(gbps float64) float64 {
+	return gbps * 86400 / 1e6
+}
+
+func gbpsToPBPerHour(gbps float64) float64 {
+	return gbps * 3600 / 1e6
+}
+
+func gbpsToEBPerYear(gbps float64) float64 {
+	return gbps * SecondsPerYear / 1e9
+}
+
+func ebPerYearToGBps(ebPerYear float64) float64 {
+	return ebPerYear * 1e9 / SecondsPerYear
+}
+
+func appendUnique(xs []float64, v float64) []float64 {
+	for _, x := range xs {
+		if math.Abs(x-v) < 1e-9 {
+			return xs
+		}
+	}
+	return append(xs, v)
+}
+
+func sanitize(cfg *Config) []string {
+	var w []string
+	sanitizeTier("NVMe", &cfg.NVMe, &w)
+	sanitizeTier("HDD", &cfg.HDD, &w)
+	cfg.Tape.Drives = nonnegInt("Tape drives", cfg.Tape.Drives, &w)
+	cfg.Tape.DriveBWGBps = nonnegF("Tape bandwidth", cfg.Tape.DriveBWGBps, &w)
+	cfg.Tape.CapacityEB = nonnegF("Tape capacity", cfg.Tape.CapacityEB, &w)
+	cfg.Stream.ReadStreams = nonnegF("Read streams", cfg.Stream.ReadStreams, &w)
+	cfg.Stream.WriteStreams = nonnegF("Write streams", cfg.Stream.WriteStreams, &w)
+	cfg.Stream.SegmentMB = nonnegF("Segment size", cfg.Stream.SegmentMB, &w)
+	cfg.Stream.SeekMs = nonnegF("Seek time", cfg.Stream.SeekMs, &w)
+	cfg.Workload.ComputeReadGBps = nonnegF("Compute read", cfg.Workload.ComputeReadGBps, &w)
+	cfg.Workload.ComputeWriteGBps = nonnegF("Compute write", cfg.Workload.ComputeWriteGBps, &w)
+	cfg.Workload.WorkingSetPB = nonnegF("Working set", cfg.Workload.WorkingSetPB, &w)
+	cfg.Workload.ArchiveEBPerYear = nonnegF("Archive rate", cfg.Workload.ArchiveEBPerYear, &w)
+	cfg.Workload.RecallGBps = nonnegF("Recall bandwidth", cfg.Workload.RecallGBps, &w)
+	cfg.Workload.BaselineEB = nonnegF("Baseline HDD", cfg.Workload.BaselineEB, &w)
+	cfg.Workload.ObservedTBpsPerEB = nonnegF("Observed scaling", cfg.Workload.ObservedTBpsPerEB, &w)
+	cfg.Workload.PrefetchHorizonHours = nonnegF("Prefetch horizon", cfg.Workload.PrefetchHorizonHours, &w)
+	cfg.Prices.NodeCHF = nonnegF("Node price", cfg.Prices.NodeCHF, &w)
+	cfg.Prices.NVMeCHFPerTB = nonnegF("NVMe media price", cfg.Prices.NVMeCHFPerTB, &w)
+	cfg.Prices.HDDCHFPerTB = nonnegF("HDD media price", cfg.Prices.HDDCHFPerTB, &w)
+	cfg.Prices.TapeDriveCHF = nonnegF("Tape drive price", cfg.Prices.TapeDriveCHF, &w)
+	cfg.Prices.TapeCHFPerTB = nonnegF("Tape media price", cfg.Prices.TapeCHFPerTB, &w)
+	if cfg.Workload.NVMeHitRate < 0 || cfg.Workload.NVMeHitRate > 1 || math.IsNaN(cfg.Workload.NVMeHitRate) {
+		w = append(w, "NVMe hit rate was outside 0–100% and was clamped.")
+		cfg.Workload.NVMeHitRate = clamp01(cfg.Workload.NVMeHitRate)
+	}
+	if cfg.Workload.ReserveFraction < 0 || math.IsNaN(cfg.Workload.ReserveFraction) {
+		w = append(w, "Reserve fraction was invalid and was treated as zero.")
+		cfg.Workload.ReserveFraction = 0
+	}
+	if cfg.Workload.ReserveFraction >= 1 {
+		w = append(w, "Reserve was at least 100% and was treated as 99% so a capacity floor can be computed.")
+		cfg.Workload.ReserveFraction = 0.99
+	}
+	return w
+}
+
+func sanitizeTier(name string, t *NodeTier, w *[]string) {
+	t.Nodes = nonnegInt(name+" nodes", t.Nodes, w)
+	t.DrivesPerNode = nonnegInt(name+" drives per node", t.DrivesPerNode, w)
+	t.NetworkGbps = nonnegF(name+" network", t.NetworkGbps, w)
+	t.DriveSizeTB = nonnegF(name+" drive size", t.DriveSizeTB, w)
+	t.DriveBWGBps = nonnegF(name+" drive bandwidth", t.DriveBWGBps, w)
+	t.DriveIOPS = nonnegF(name+" drive IOPS", t.DriveIOPS, w)
+}
+
+func nonnegF(name string, v float64, w *[]string) float64 {
+	if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
+		*w = append(*w, name+" was invalid and was treated as zero.")
+		return 0
+	}
+	return v
+}
+
+func nonnegInt(name string, v int, w *[]string) int {
+	if v < 0 {
+		*w = append(*w, name+" was negative and was treated as zero.")
+		return 0
+	}
+	return v
+}
+
+func clamp01(v float64) float64 {
+	if math.IsNaN(v) || v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
+}

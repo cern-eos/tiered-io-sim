@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tiered I/O Simulator</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect fill='%23070708' width='32' height='32'/%3E%3Crect fill='%23e4c39a' x='4' y='4' width='24' height='6' rx='1'/%3E%3Crect fill='%23c4894a' x='4' y='13' width='24' height='6' rx='1'/%3E%3Crect fill='%238f5e34' x='4' y='22' width='24' height='6' rx='1'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="top">
+      <div class="brand">
+        <div class="mark" aria-hidden="true"><i></i><i></i><i></i></div>
+        <div>
+          <h1>Tiered I/O Simulator</h1>
+          <p class="lede">NVMe performance cache, HDD active tier, and a tape carousel. HDD bandwidth is the multi-stream seek formula on every drive, then the minimum with the node network.</p>
+        </div>
+      </div>
+    </header>
+
+    <section id="banner" class="banner" aria-live="polite">
+      <h2>Computing the tier</h2>
+    </section>
+
+    <form id="model" autocomplete="off">
+      <section class="tier-grid">
+        <article class="card nvme">
+          <p class="kicker">Performance cache</p>
+          <h2>NVMe</h2>
+          <div class="fields">
+            <label class="field">
+              <span class="k">Nodes</span>
+              <input id="nvme-nodes" type="number" min="0" step="1" inputmode="numeric">
+            </label>
+            <label class="field">
+              <span class="k">Drives / node</span>
+              <input id="nvme-drives" type="number" min="0" step="1" inputmode="numeric">
+            </label>
+            <div class="field wide">
+              <span class="k">Network (GbE)</span>
+              <div class="net" role="radiogroup" aria-label="NVMe network">
+                <label><input type="radio" name="nvme-net" value="100">100</label>
+                <label><input type="radio" name="nvme-net" value="400" checked>400</label>
+                <label><input type="radio" name="nvme-net" value="800">800</label>
+              </div>
+            </div>
+            <label class="field">
+              <span class="k">Drive size (TB)</span>
+              <input id="nvme-size" type="number" min="0" step="0.01" inputmode="decimal">
+            </label>
+            <label class="field">
+              <span class="k">Drive BW (GB/s)</span>
+              <input id="nvme-bw" type="number" min="0" step="0.1" inputmode="decimal">
+            </label>
+            <label class="field wide">
+              <span class="k">IOPS / drive</span>
+              <input id="nvme-iops" type="number" min="0" step="1000" inputmode="numeric">
+            </label>
+          </div>
+          <p class="hint">Delivered bandwidth is the minimum of aggregate drive bandwidth and the node line rate.</p>
+          <p class="foot" id="foot-nvme">—</p>
+        </article>
+
+        <article class="card hdd">
+          <p class="kicker">Active capacity</p>
+          <h2>HDD</h2>
+          <div class="fields">
+            <label class="field">
+              <span class="k">Nodes</span>
+              <input id="hdd-nodes" type="number" min="0" step="1" inputmode="numeric">
+            </label>
+            <label class="field">
+              <span class="k">Drives / node</span>
+              <input id="hdd-drives" type="number" min="0" step="1" inputmode="numeric">
+            </label>
+            <div class="field wide">
+              <span class="k">Network (GbE)</span>
+              <div class="net" role="radiogroup" aria-label="HDD network">
+                <label><input type="radio" name="hdd-net" value="100" checked>100</label>
+                <label><input type="radio" name="hdd-net" value="400">400</label>
+                <label><input type="radio" name="hdd-net" value="800">800</label>
+              </div>
+            </div>
+            <label class="field">
+              <span class="k">Drive size (TB)</span>
+              <input id="hdd-size" type="number" min="0" step="0.1" inputmode="decimal">
+            </label>
+            <label class="field">
+              <span class="k">Sequential BW (MB/s)</span>
+              <input id="hdd-bw-mb" type="number" min="0" step="1" inputmode="decimal">
+            </label>
+            <label class="field wide">
+              <span class="k">Rated IOPS / drive</span>
+              <input id="hdd-iops" type="number" min="0" step="1" inputmode="numeric">
+            </label>
+            <div class="field wide">
+              <span class="k">Capacity target</span>
+              <div class="presets">
+                <button type="button" data-eb="2.5">2.5 EB</button>
+                <button type="button" data-eb="2">2.0 EB</button>
+                <button type="button" data-eb="1.5">1.5 EB</button>
+                <button type="button" data-eb="1.25">1.25 EB</button>
+                <button type="button" data-eb="1">1.0 EB</button>
+                <button type="button" data-eb="0.75">750 PB</button>
+                <button type="button" data-eb="0.5">500 PB</button>
+              </div>
+            </div>
+          </div>
+          <div class="stream">
+            <h3>Stream model</h3>
+            <div class="fields">
+              <label class="field">
+                <span class="k">Active read streams</span>
+                <input id="read-streams" type="number" min="0" step="1000" inputmode="numeric">
+              </label>
+              <label class="field">
+                <span class="k">Active write streams</span>
+                <input id="write-streams" type="number" min="0" step="1000" inputmode="numeric">
+              </label>
+              <label class="field">
+                <span class="k">Seek (ms)</span>
+                <input id="seek-ms" type="number" min="0" step="0.1" inputmode="decimal">
+              </label>
+              <label class="field wide">
+                <span class="k">Streams per drive <output id="streams-readout" for="streams-slider">8</output></span>
+                <input id="streams-slider" type="range" min="1" max="64" step="1" value="8" aria-label="Streams per drive">
+              </label>
+              <div class="field wide">
+                <label class="k" for="segment-mb">Segment between seeks (MB)</label>
+                <input id="segment-mb" type="number" min="0" step="0.125" inputmode="decimal">
+                <span class="chips">
+                  <button type="button" data-segment="0.128">128 KB</button>
+                  <button type="button" data-segment="1">1 MB</button>
+                  <button type="button" data-segment="8">8 MB</button>
+                  <button type="button" data-segment="64">64 MB</button>
+                  <button type="button" data-segment="128">128 MB</button>
+                </span>
+              </div>
+            </div>
+            <p class="hint">Read and write streams share each drive. Their sum is n in the formula, so seeks are charged between every active stream. The slider keeps the read/write mix and changes how many streams each drive serves. The plot sweeps that count.</p>
+          </div>
+          <p class="foot" id="foot-hdd">—</p>
+        </article>
+
+        <article class="card tape">
+          <p class="kicker">Cold capacity</p>
+          <h2>Tape</h2>
+          <div class="fields">
+            <label class="field">
+              <span class="k">Tape drives</span>
+              <input id="tape-drives" type="number" min="0" step="1" inputmode="numeric">
+            </label>
+            <label class="field">
+              <span class="k">BW / drive (MB/s)</span>
+              <input id="tape-bw-mb" type="number" min="0" step="1" inputmode="decimal">
+            </label>
+            <label class="field wide">
+              <span class="k">Library capacity (EB)</span>
+              <input id="tape-capacity" type="number" min="0" step="0.1" inputmode="decimal">
+            </label>
+          </div>
+          <p class="hint">Aggregate bandwidth is the drive count times bandwidth per drive. Library capacity is the cartridge pool and does not follow from the drive count. Treat the aggregate as burst capability, not a continuous setpoint.</p>
+          <p class="foot" id="foot-tape">—</p>
+        </article>
+      </section>
+
+      <section class="card scenario">
+        <h3>Workload</h3>
+        <div class="fields">
+          <label class="field">
+            <span class="k">Compute read (GB/s)</span>
+            <input id="compute-read" type="number" min="0" step="10" inputmode="decimal">
+          </label>
+          <label class="field">
+            <span class="k">Compute write (GB/s)</span>
+            <input id="compute-write" type="number" min="0" step="10" inputmode="decimal">
+          </label>
+          <label class="field">
+            <span class="k">NVMe hit rate (%)</span>
+            <input id="nvme-hit" type="number" min="0" max="100" step="1" inputmode="decimal">
+            <span class="hint">Share of compute reads attempted from NVMe before HDD.</span>
+          </label>
+          <label class="field">
+            <span class="k">Prefetch horizon (h)</span>
+            <input id="prefetch-hours" type="number" min="0" step="1" inputmode="decimal">
+          </label>
+          <label class="field">
+            <span class="k">Working set (PB)</span>
+            <input id="working-set" type="number" min="0" step="10" inputmode="decimal">
+          </label>
+          <label class="field">
+            <span class="k">Reserve (%)</span>
+            <input id="reserve-pct" type="number" min="0" max="99" step="1" inputmode="decimal">
+            <span class="hint">Held for staging, rebuilds, and output.</span>
+          </label>
+          <label class="field">
+            <span class="k">Baseline HDD (EB)</span>
+            <input id="baseline-eb" type="number" min="0" step="0.1" inputmode="decimal">
+          </label>
+          <label class="field">
+            <span class="k">Observed (TB/s per EB)</span>
+            <input id="observed-scale" type="number" min="0" step="0.1" inputmode="decimal">
+            <span class="hint">Study clusters delivered about 1 TB/s of read per EB of HDD. Zero hides that reference.</span>
+          </label>
+          <label class="field">
+            <span class="k">Archive (EB/year)</span>
+            <input id="archive-eb" type="number" min="0" step="0.1" inputmode="decimal">
+          </label>
+          <label class="field">
+            <span class="k">Recall (GB/s)</span>
+            <input id="recall" type="number" min="0" step="10" inputmode="decimal">
+          </label>
+        </div>
+      </section>
+
+      <section class="card scenario">
+        <h3>Prices</h3>
+        <div class="fields">
+          <label class="field">
+            <span class="k">Node (CHF)</span>
+            <input id="price-node" type="number" min="0" step="1000" inputmode="decimal">
+          </label>
+          <label class="field">
+            <span class="k">NVMe media (CHF/TB)</span>
+            <input id="price-nvme" type="number" min="0" step="1" inputmode="decimal">
+          </label>
+          <label class="field">
+            <span class="k">HDD media (CHF/TB)</span>
+            <input id="price-hdd" type="number" min="0" step="1" inputmode="decimal">
+          </label>
+          <label class="field">
+            <span class="k">Tape drive (CHF)</span>
+            <input id="price-tape-drive" type="number" min="0" step="1000" inputmode="decimal">
+          </label>
+          <label class="field">
+            <span class="k">Tape media (CHF/TB)</span>
+            <input id="price-tape" type="number" min="0" step="1" inputmode="decimal">
+          </label>
+        </div>
+        <p class="hint">The node price applies to every NVMe and HDD server. Media is raw capacity. Tape drives are priced apart from the cartridge pool.</p>
+      </section>
+    </form>
+
+    <section class="results">
+      <div class="card" id="panel-system">
+        <h3>Whole model</h3>
+        <div id="stack"></div>
+        <h3 class="spaced">Bandwidth and capacity</h3>
+        <div id="budgets"></div>
+        <h3 class="spaced">Lower bounds on HDD</h3>
+        <p class="hint">The minimum is the larger of the working-set floor and the full I/O budget. Compute bandwidth is listed on its own because archive and recall are additional HDD traffic. Observed scaling uses the TB/s-per-EB coefficient. The hardware column scales the stream-and-network model linearly with capacity.</p>
+        <div id="bounds"></div>
+      </div>
+
+      <div class="card" id="panel-formula">
+        <h3>Stream degradation sweep</h3>
+        <div class="formula-row" aria-label="Stream bandwidth formula">
+          <span>BW(n)</span>
+          <span>=</span>
+          <span class="frac">
+            <span class="num">n · S</span>
+            <span class="den">n · (S / BW<sub>seq</sub>) + (n − 1) · t<sub>seek</sub></span>
+          </span>
+        </div>
+        <p class="whole">BW<sub>tier</sub> = min( D · BW(n), &nbsp; N<sub>nodes</sub> · R<sub>GbE</sub> / 8 )</p>
+        <p class="hint">n is active read streams plus write streams, divided by the drive count. The sweep holds that mix and varies n. The left axis is bandwidth. The right axis is the fraction of sequential bandwidth lost to seeks.</p>
+        <ul id="formula-lines"></ul>
+        <p id="iops-note" class="hint"></p>
+        <div id="chart"></div>
+        <p id="op-point" class="op"></p>
+      </div>
+
+      <div class="card cost" id="panel-cost">
+        <h3>Capital cost</h3>
+        <div id="cost-tiers"></div>
+        <div id="cost-bar"></div>
+        <p id="cost-total" class="op"></p>
+        <p id="cost-baseline" class="hint"></p>
+      </div>
+
+      <div class="card sweep" id="panel-sweep">
+        <h3>HDD size sweep</h3>
+        <p class="hint">Same drives, network, stream settings, prices, and workload. Only the HDD node count changes, rounded to a whole node. Slack is delivered bandwidth minus compute, archive, and recall. A row stays within budget when the working set fits and slack is positive. NVMe and tape costs stay put; the HDD column is what changes.</p>
+        <div class="table-scroll" id="sweep"></div>
+      </div>
+    </section>
+
+    <footer class="footnote">
+      Decimal units: 1 EB = 1,000 PB = 1,000,000 TB, and 1 GB/s = 1,000 MB/s. Network GB/s is the line rate, Gbit/s ÷ 8. A year is 365 days.
+    </footer>
+  </div>
+  <script>
+    window.BOOT = {{.Boot}};
+  </script>
+  <script src="/app.js"></script>
+</body>
+</html>
