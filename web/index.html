@@ -71,6 +71,13 @@
           <p class="kicker">Active capacity</p>
           <h2>HDD</h2>
           <div class="fields">
+            <div class="field wide">
+              <span class="k">Layout</span>
+              <div class="net layout" role="radiogroup" aria-label="HDD layout">
+                <label><input type="radio" name="hdd-layout" value="replica" checked>2 replica</label>
+                <label><input type="radio" name="hdd-layout" value="ec10p2">10+2 EC</label>
+              </div>
+            </div>
             <label class="field">
               <span class="k">Nodes</span>
               <input id="hdd-nodes" type="number" min="0" step="1" inputmode="numeric">
@@ -143,7 +150,7 @@
                 </span>
               </div>
             </div>
-            <p class="hint">Read and write streams share each drive. Their sum is n in the formula, so seeks are charged between every active stream. The slider keeps the read/write mix and changes how many streams each drive serves. The plot sweeps that count.</p>
+            <p class="hint" id="hdd-layout-hint">Read and write counts are logical client streams. The layout multiplies the write streams that land on the disks, and that disk count is n in the formula.</p>
           </div>
           <p class="foot" id="foot-hdd">—</p>
         </article>
@@ -173,6 +180,11 @@
       <section class="card scenario">
         <h3>Workload</h3>
         <div class="fields">
+          <label class="field">
+            <span class="k">File size (GB)</span>
+            <input id="file-size" type="number" min="0" step="0.1" inputmode="decimal">
+            <span class="hint">Logical size used to turn bandwidth into files per second.</span>
+          </label>
           <label class="field">
             <span class="k">Compute read (GB/s)</span>
             <input id="compute-read" type="number" min="0" step="10" inputmode="decimal">
@@ -292,7 +304,7 @@
           </span>
         </div>
         <p class="whole">BW<sub>tier</sub> = min( D · BW(n), &nbsp; N<sub>nodes</sub> · R<sub>GbE</sub> / 8 )</p>
-        <p class="hint">n is active read streams plus write streams, divided by the drive count. The sweep holds that mix and varies n. The left axis is bandwidth. The right axis is the fraction of sequential bandwidth lost to seeks.</p>
+        <p class="hint">n is disk read streams plus disk write streams, divided by the drive count. Replication doubles write streams. 10+2 erasure coding turns each logical write into 12 disk streams. The sweep holds that mix and varies n. The left axis is bandwidth. The right axis is the fraction of sequential bandwidth lost to seeks.</p>
         <ul id="formula-lines"></ul>
         <p id="iops-note" class="hint"></p>
         <div id="chart"></div>
@@ -311,6 +323,12 @@
         <h3>HDD size sweep</h3>
         <p class="hint">Same drives, network, stream settings, prices, power, and workload. Only the HDD node count changes, rounded to a whole node. Slack is delivered bandwidth minus compute, archive, and recall. A row stays within budget when the working set fits and slack is positive. NVMe and tape stay put; the HDD cost and the power column change with the node count.</p>
         <div class="table-scroll" id="sweep"></div>
+      </div>
+
+      <div class="card summary" id="panel-summary">
+        <h3>Summary</h3>
+        <div id="summary"></div>
+        <p class="hint">HDD IOPS are the delivered bandwidth divided by the segment size. NVMe IOPS are the rated drive IOPS times the drive count. Tape is capacity and bandwidth, so it is not in the IOPS total. Files per second use the configured file size. On HDD, a write file is charged at the layout multiplier. Capacity is NVMe plus HDD plus the tape library.</p>
       </div>
     </section>
 

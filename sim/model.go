@@ -102,6 +102,7 @@ type Workload struct {
 	BaselineEB           float64 `json:"baselineEB"`
 	ObservedTBpsPerEB    float64 `json:"observedTBpsPerEB"`
 	PrefetchHorizonHours float64 `json:"prefetchHorizonHours"`
+	FileSizeGB           float64 `json:"fileSizeGB"`
 }
 
 type Prices struct {
@@ -131,6 +132,50 @@ type Config struct {
 	// Hybrid installs the NVMe drives in the HDD nodes. Those drives add no
 	// servers, and both tiers share the HDD network.
 	Hybrid bool `json:"hybrid"`
+	// Layout is how the HDD tier protects data: "replica" or "ec10p2".
+	Layout string `json:"layout"`
+}
+
+const (
+	LayoutReplica = "replica"
+	LayoutEC10p2  = "ec10p2"
+)
+
+// layoutFactors scales logical client IO into the bytes and disk streams
+// the HDD tier actually serves.
+type layoutFactors struct {
+	ID           string
+	Name         string
+	ReadVolume   float64
+	WriteVolume  float64
+	ReadStreams  float64
+	WriteStreams float64
+	Note         string
+}
+
+func layoutOf(id string) layoutFactors {
+	switch id {
+	case LayoutEC10p2:
+		return layoutFactors{
+			ID:           LayoutEC10p2,
+			Name:         "10+2 erasure coding",
+			ReadVolume:   9.0 / 10.0,
+			WriteVolume:  11.0 / 10.0,
+			ReadStreams:  1,
+			WriteStreams: 12,
+			Note:         "10+2 erasure coding uses a gateway. Each logical write becomes 12 disk streams, and the gateway sends 11/10 of that volume onward. A read pulls 9/10 of the volume in. Archive is charged as a read and recall as a write.",
+		}
+	default:
+		return layoutFactors{
+			ID:           LayoutReplica,
+			Name:         "2 replica",
+			ReadVolume:   1,
+			WriteVolume:  2,
+			ReadStreams:  1,
+			WriteStreams: 2,
+			Note:         "2 replica writes both copies, so write traffic and write streams double. A read uses one copy, so read traffic and read streams stay at 1×. Archive is charged as a read and recall as a write.",
+		}
+	}
 }
 
 func DefaultConfig() Config {
@@ -161,6 +206,7 @@ func DefaultConfig() Config {
 			BaselineEB:           2.5,
 			ObservedTBpsPerEB:    1,
 			PrefetchHorizonHours: 24,
+			FileSizeGB:           10,
 		},
 		Prices: Prices{
 			NodeCHF:      10_000,
@@ -175,6 +221,7 @@ func DefaultConfig() Config {
 			HDDDriveW:  8,
 			TapeDriveW: 30,
 		},
+		Layout: LayoutReplica,
 	}
 }
 
@@ -203,9 +250,15 @@ type HDDStats struct {
 	StreamsPerDrive        float64 `json:"streamsPerDrive"`
 	ReadStreams            float64 `json:"readStreams"`
 	WriteStreams           float64 `json:"writeStreams"`
+	LogicalReadStreams     float64 `json:"logicalReadStreams"`
+	LogicalWriteStreams    float64 `json:"logicalWriteStreams"`
+	ReadStreamFactor       float64 `json:"readStreamFactor"`
+	WriteStreamFactor      float64 `json:"writeStreamFactor"`
+	LayoutName             string  `json:"layoutName"`
 	ReadDeliveredGBps      float64 `json:"readDeliveredGBps"`
 	WriteDeliveredGBps     float64 `json:"writeDeliveredGBps"`
 	FormulaIOPSPerDrive    float64 `json:"formulaIOPSPerDrive"`
+	DeliveredIOPS          float64 `json:"deliveredIOPS"`
 	ObservedGBps           float64 `json:"observedGBps"`
 	ImpliedTBpsPerEB       float64 `json:"impliedTBpsPerEB"`
 	BaselineEB             float64 `json:"baselineEB"`
@@ -240,8 +293,15 @@ type Flow struct {
 	PrefetchPB           float64 `json:"prefetchPB"`
 	NVMeHitDemandGBps    float64 `json:"nvmeHitDemandGBps"`
 	NVMeServedGBps       float64 `json:"nvmeServedGBps"`
+	Layout               string  `json:"layout"`
+	LayoutName           string  `json:"layoutName"`
+	LayoutNote           string  `json:"layoutNote"`
+	ReadVolume           float64 `json:"readVolume"`
+	WriteVolume          float64 `json:"writeVolume"`
 	HDDComputeReadGBps   float64 `json:"hddComputeReadGBps"`
 	HDDComputeWriteGBps  float64 `json:"hddComputeWriteGBps"`
+	HDDArchiveGBps       float64 `json:"hddArchiveGBps"`
+	HDDRecallGBps        float64 `json:"hddRecallGBps"`
 	HDDDemandGBps        float64 `json:"hddDemandGBps"`
 	HDDSlackGBps         float64 `json:"hddSlackGBps"`
 	ObservedSlackGBps    float64 `json:"observedSlackGBps"`
@@ -372,6 +432,23 @@ type Power struct {
 	TotalW      float64 `json:"totalW"`
 }
 
+type Summary struct {
+	NVMeIOPS            float64 `json:"nvmeIOPS"`
+	HDDIOPS             float64 `json:"hddIOPS"`
+	TotalIOPS           float64 `json:"totalIOPS"`
+	CostCHF             float64 `json:"costCHF"`
+	NVMeCapacityEB      float64 `json:"nvmeCapacityEB"`
+	HDDCapacityEB       float64 `json:"hddCapacityEB"`
+	TapeCapacityEB      float64 `json:"tapeCapacityEB"`
+	TotalCapacityEB     float64 `json:"totalCapacityEB"`
+	FileSizeGB          float64 `json:"fileSizeGB"`
+	NVMeFilesPerSec     float64 `json:"nvmeFilesPerSec"`
+	HDDReadFilesPerSec  float64 `json:"hddReadFilesPerSec"`
+	HDDWriteFilesPerSec float64 `json:"hddWriteFilesPerSec"`
+	HDDFilesPerSec      float64 `json:"hddFilesPerSec"`
+	TapeFilesPerSec     float64 `json:"tapeFilesPerSec"`
+}
+
 type Result struct {
 	Hybrid   bool         `json:"hybrid"`
 	NVMe     TierStats    `json:"nvme"`
@@ -385,6 +462,7 @@ type Result struct {
 	Bounds   Bounds       `json:"bounds"`
 	Cost     Cost         `json:"cost"`
 	Power    Power        `json:"power"`
+	Summary  Summary      `json:"summary"`
 	Verdict  Verdict      `json:"verdict"`
 	Warnings []string     `json:"warnings"`
 }
@@ -401,12 +479,13 @@ func Evaluate(cfg Config) Result {
 
 func evaluate(cfg Config) Result {
 	nvme := evalNode(cfg.NVMe)
-	hdd := evalHDD(cfg.HDD, cfg.Stream, cfg.Workload)
+	hdd := evalHDD(cfg.HDD, cfg.Stream, cfg.Workload, cfg.Layout)
 	if cfg.Hybrid {
 		applyHybrid(cfg, &nvme, &hdd)
 	}
+	assignDeliveredIOPS(&hdd, cfg.Stream.SegmentMB)
 	tape := evalTape(cfg.Tape)
-	flow := evalFlow(cfg.Workload, nvme, hdd, tape)
+	flow := evalFlow(cfg.Workload, cfg.Layout, nvme, hdd, tape)
 	bounds := evalBounds(hdd, flow, cfg.Workload)
 	formula := evalFormula(cfg, hdd)
 	curveNet := hdd.NetworkGBps
@@ -418,6 +497,11 @@ func evaluate(cfg Config) Result {
 		curveNet = remain
 		formula.Lines = append(formula.Lines, hybridLine(hdd.NetworkGBps, flow.NVMeServedGBps))
 	}
+	cost := evalCost(cfg, nvme, hdd, tape)
+	summary := evalSummary(nvme, hdd, tape, cost, cfg.Workload.FileSizeGB, flow.ReadVolume, flow.WriteVolume)
+	if cfg.Workload.FileSizeGB > 0 {
+		formula.Lines = append(formula.Lines, "A "+fmtNum(cfg.Workload.FileSizeGB)+" GB file gives the HDD tier "+fmtNum(summary.HDDReadFilesPerSec)+" read files/s and "+fmtNum(summary.HDDWriteFilesPerSec)+" write files/s at this stream mix.")
+	}
 	return Result{
 		Hybrid:  cfg.Hybrid,
 		NVMe:    nvme,
@@ -425,11 +509,47 @@ func evaluate(cfg Config) Result {
 		Tape:    tape,
 		Flow:    flow,
 		Bounds:  bounds,
-		Cost:    evalCost(cfg, nvme, hdd, tape),
+		Cost:    cost,
 		Power:   evalPower(cfg.Power, nvme, hdd, tape),
+		Summary: summary,
 		Formula: formula,
 		Curve:   evalCurve(cfg, hdd.CapacityEB, curveNet),
 	}
+}
+
+func assignDeliveredIOPS(hdd *HDDStats, segmentMB float64) {
+	if segmentMB <= 0 || hdd.DeliveredGBps <= 0 {
+		hdd.DeliveredIOPS = 0
+		return
+	}
+	hdd.DeliveredIOPS = hdd.DeliveredGBps / (segmentMB / 1000)
+}
+
+func filesPerSec(gbps, fileGB, volume float64) float64 {
+	if fileGB <= 0 || gbps <= 0 || volume <= 0 {
+		return 0
+	}
+	return gbps / (fileGB * volume)
+}
+
+func evalSummary(nvme TierStats, hdd HDDStats, tape TapeStats, cost Cost, fileGB, readVolume, writeVolume float64) Summary {
+	s := Summary{
+		NVMeIOPS:            nvme.AggregateIOPS,
+		HDDIOPS:             hdd.DeliveredIOPS,
+		CostCHF:             cost.TotalCHF,
+		NVMeCapacityEB:      nvme.CapacityEB,
+		HDDCapacityEB:       hdd.CapacityEB,
+		TapeCapacityEB:      tape.CapacityEB,
+		FileSizeGB:          fileGB,
+		NVMeFilesPerSec:     filesPerSec(nvme.DeliveredGBps, fileGB, 1),
+		HDDReadFilesPerSec:  filesPerSec(hdd.ReadDeliveredGBps, fileGB, readVolume),
+		HDDWriteFilesPerSec: filesPerSec(hdd.WriteDeliveredGBps, fileGB, writeVolume),
+		TapeFilesPerSec:     filesPerSec(tape.BandwidthGBps, fileGB, 1),
+	}
+	s.TotalIOPS = s.NVMeIOPS + s.HDDIOPS
+	s.TotalCapacityEB = s.NVMeCapacityEB + s.HDDCapacityEB + s.TapeCapacityEB
+	s.HDDFilesPerSec = s.HDDReadFilesPerSec + s.HDDWriteFilesPerSec
+	return s
 }
 
 // applyHybrid places the NVMe complement in the HDD nodes. Drive count is
@@ -472,7 +592,7 @@ func applyHybrid(cfg Config, nvme *TierStats, hdd *HDDStats) {
 	} else {
 		hdd.Limit = limitClause(hddBind, hdd.Mode)
 	}
-	hdd.ReadDeliveredGBps, hdd.WriteDeliveredGBps = splitBandwidth(cfg.Stream.ReadStreams, cfg.Stream.WriteStreams, hddDel)
+	hdd.ReadDeliveredGBps, hdd.WriteDeliveredGBps = splitBandwidth(hdd.ReadStreams, hdd.WriteStreams, hddDel)
 	if hdd.CapacityEB > 0 {
 		hdd.ImpliedTBpsPerEB = (hddDel / 1000) / hdd.CapacityEB
 	}
@@ -592,9 +712,12 @@ func seekDegradation(n, perDrive, sequential float64) float64 {
 	return lost
 }
 
-func evalHDD(t NodeTier, s Stream, wl Workload) HDDStats {
+func evalHDD(t NodeTier, s Stream, wl Workload, layout string) HDDStats {
 	base := evalNode(t)
-	n := streamsPerDrive(s, base.Drives)
+	factors := layoutOf(layout)
+	readStreams := s.ReadStreams * factors.ReadStreams
+	writeStreams := s.WriteStreams * factors.WriteStreams
+	n := streamsPerDrive(Stream{ReadStreams: readStreams, WriteStreams: writeStreams}, base.Drives)
 	mode := streamMode(n, s.SeekMs/1000)
 	per := DriveStreamGBps(n, s.SegmentMB/1000, t.DriveBWGBps, s.SeekMs/1000)
 	agg := float64(base.Drives) * per
@@ -606,7 +729,7 @@ func evalHDD(t NodeTier, s Stream, wl Workload) HDDStats {
 	if t.DriveBWGBps > 0 {
 		eff = per / t.DriveBWGBps
 	}
-	readBW, writeBW := splitBandwidth(s.ReadStreams, s.WriteStreams, delivered)
+	readBW, writeBW := splitBandwidth(readStreams, writeStreams, delivered)
 	formulaIOPS := 0.0
 	if s.SegmentMB > 0 {
 		formulaIOPS = per / (s.SegmentMB / 1000)
@@ -632,8 +755,13 @@ func evalHDD(t NodeTier, s Stream, wl Workload) HDDStats {
 		Efficiency:             eff,
 		Degradation:            seekDegradation(n, per, t.DriveBWGBps),
 		StreamsPerDrive:        n,
-		ReadStreams:            s.ReadStreams,
-		WriteStreams:           s.WriteStreams,
+		ReadStreams:            readStreams,
+		WriteStreams:           writeStreams,
+		LogicalReadStreams:     s.ReadStreams,
+		LogicalWriteStreams:    s.WriteStreams,
+		ReadStreamFactor:       factors.ReadStreams,
+		WriteStreamFactor:      factors.WriteStreams,
+		LayoutName:             factors.Name,
 		ReadDeliveredGBps:      readBW,
 		WriteDeliveredGBps:     writeBW,
 		FormulaIOPSPerDrive:    formulaIOPS,
@@ -659,7 +787,8 @@ func evalTape(t TapeTier) TapeStats {
 	}
 }
 
-func evalFlow(wl Workload, nvme TierStats, hdd HDDStats, tape TapeStats) Flow {
+func evalFlow(wl Workload, layout string, nvme TierStats, hdd HDDStats, tape TapeStats) Flow {
+	factors := layoutOf(layout)
 	archive := ebPerYearToGBps(wl.ArchiveEBPerYear)
 	recall := wl.RecallGBps
 	hitDemand := wl.ComputeReadGBps * wl.NVMeHitRate
@@ -668,7 +797,11 @@ func evalFlow(wl Workload, nvme TierStats, hdd HDDStats, tape TapeStats) Flow {
 	if hddRead < 0 {
 		hddRead = 0
 	}
-	demand := hddRead + wl.ComputeWriteGBps + archive + recall
+	hddReadTraffic := hddRead * factors.ReadVolume
+	hddWriteTraffic := wl.ComputeWriteGBps * factors.WriteVolume
+	archiveTraffic := archive * factors.ReadVolume
+	recallTraffic := recall * factors.WriteVolume
+	demand := hddReadTraffic + hddWriteTraffic + archiveTraffic + recallTraffic
 	workingSetEB := wl.WorkingSetPB / 1000
 	reserveEB := hdd.CapacityEB * wl.ReserveFraction
 	freeEB := hdd.CapacityEB - workingSetEB - reserveEB
@@ -710,10 +843,17 @@ func evalFlow(wl Workload, nvme TierStats, hdd HDDStats, tape TapeStats) Flow {
 		RecallPBPerHour:      pbPerHour,
 		RecallPBPerDay:       gbpsToPBPerDay(recall),
 		PrefetchPB:           pbPerHour * wl.PrefetchHorizonHours,
+		Layout:               factors.ID,
+		LayoutName:           factors.Name,
+		LayoutNote:           factors.Note,
+		ReadVolume:           factors.ReadVolume,
+		WriteVolume:          factors.WriteVolume,
 		NVMeHitDemandGBps:    hitDemand,
 		NVMeServedGBps:       served,
-		HDDComputeReadGBps:   hddRead,
-		HDDComputeWriteGBps:  wl.ComputeWriteGBps,
+		HDDComputeReadGBps:   hddReadTraffic,
+		HDDComputeWriteGBps:  hddWriteTraffic,
+		HDDArchiveGBps:       archiveTraffic,
+		HDDRecallGBps:        recallTraffic,
 		HDDDemandGBps:        demand,
 		HDDSlackGBps:         hdd.DeliveredGBps - demand,
 		ObservedSlackGBps:    observedSlack,
@@ -728,7 +868,7 @@ func evalFlow(wl Workload, nvme TierStats, hdd HDDStats, tape TapeStats) Flow {
 		StageWorkingSetHours: stageHours,
 		TapeToHardware:       toHW,
 		TapeToObserved:       toObs,
-		ComputeDemandGBps:    hddRead + wl.ComputeWriteGBps,
+		ComputeDemandGBps:    hddReadTraffic + hddWriteTraffic,
 	}
 }
 
@@ -832,8 +972,7 @@ func formulaLines(f Formula, hdd HDDStats) []string {
 				" / ("+fmtNum(f.Streams)+" × ("+fmtMB(f.SegmentMB)+" / "+fmtMBps(f.SeqMBps)+") + ("+fmtNum(f.Streams)+" − 1) × "+fmtNum(f.SeekMs)+" ms) = "+
 				fmtMBps(f.PerDriveMBps)+" per drive, "+fmtPct(f.Efficiency)+" of sequential.")
 	}
-	lines = append(lines,
-		fmtInt(int(math.Round(hdd.ReadStreams)))+" read streams and "+fmtInt(int(math.Round(hdd.WriteStreams)))+" write streams average "+fmtNum(hdd.StreamsPerDrive)+" per drive. Read streams get "+fmtBW(hdd.ReadDeliveredGBps)+" and write streams get "+fmtBW(hdd.WriteDeliveredGBps)+".")
+	lines = append(lines, layoutStreamLine(hdd))
 	if hdd.Degradation >= 0.0005 {
 		lines = append(lines, "Seek contention removes "+fmtPct(hdd.Degradation)+" of sequential bandwidth on each drive.")
 	}
@@ -841,6 +980,13 @@ func formulaLines(f Formula, hdd HDDStats) []string {
 		fmtInt(f.Drives)+" drives produce "+fmtBW(f.SpindleGBps)+". The "+fmtInt(f.Nodes)+"-node "+fmtNum(f.NetworkGbps)+" GbE network allows "+fmtBW(f.NetworkGBps)+". Delivered bandwidth is "+fmtBW(f.DeliveredGBps)+", limited by "+hdd.Limit+".")
 	if f.Mode == "contended" {
 		lines = append(lines, "As the stream count grows, one drive approaches "+fmtMBps(f.AsymptoteMBps)+".")
+	}
+	if f.SegmentMB > 0 {
+		per := 0.0
+		if hdd.Drives > 0 {
+			per = hdd.DeliveredIOPS / float64(hdd.Drives)
+		}
+		lines = append(lines, "HDD IOPS are delivered bandwidth divided by the segment size: "+fmtInt(int(math.Round(hdd.DeliveredIOPS)))+" ("+fmtNum(per)+" / drive).")
 	}
 	if hdd.CapacityEB > 0 {
 		line := "Across this capacity the hardware model implies " + fmtNum(hdd.ImpliedTBpsPerEB) + " TB/s per EB."
@@ -852,9 +998,25 @@ func formulaLines(f Formula, hdd HDDStats) []string {
 	return lines
 }
 
+func layoutStreamLine(hdd HDDStats) string {
+	disk := fmtInt(int(math.Round(hdd.ReadStreams))) + " disk read streams and " + fmtInt(int(math.Round(hdd.WriteStreams))) + " disk write streams average " + fmtNum(hdd.StreamsPerDrive) + " per drive. Read streams get " + fmtBW(hdd.ReadDeliveredGBps) + " and write streams get " + fmtBW(hdd.WriteDeliveredGBps) + "."
+	if hdd.WriteStreamFactor == 1 && hdd.ReadStreamFactor == 1 {
+		return disk
+	}
+	name := hdd.LayoutName
+	if name == "" {
+		name = "The layout"
+	}
+	return name + " turns " + fmtInt(int(math.Round(hdd.LogicalWriteStreams))) + " logical write streams into " + fmtInt(int(math.Round(hdd.WriteStreams))) + " disk write streams. " + disk
+}
+
 func evalCurve(cfg Config, capacityEB, networkGBps float64) []CurvePoint {
 	drives := cfg.HDD.Nodes * cfg.HDD.DrivesPerNode
-	n := streamsPerDrive(cfg.Stream, drives)
+	factors := layoutOf(cfg.Layout)
+	readStreams := cfg.Stream.ReadStreams * factors.ReadStreams
+	writeStreams := cfg.Stream.WriteStreams * factors.WriteStreams
+	op := streamsPerDrive(Stream{ReadStreams: readStreams, WriteStreams: writeStreams}, drives)
+	n := op
 	if n < 1 {
 		n = 1
 	}
@@ -863,7 +1025,7 @@ func evalCurve(cfg Config, capacityEB, networkGBps float64) []CurvePoint {
 	for i := 0; i <= 63; i++ {
 		xs = append(xs, 1+(hi-1)*float64(i)/63)
 	}
-	xs = appendUnique(xs, streamsPerDrive(cfg.Stream, drives))
+	xs = appendUnique(xs, op)
 	sort.Float64s(xs)
 	net := networkGBps
 	observed := 0.0
@@ -880,7 +1042,7 @@ func evalCurve(cfg Config, capacityEB, networkGBps float64) []CurvePoint {
 		per := DriveStreamGBps(x, seg, cfg.HDD.DriveBWGBps, seek)
 		spindle := float64(drives) * per
 		delivered, _ := clipBandwidth(spindle, net, BindStream, BindNetwork)
-		readBW, writeBW := splitBandwidth(cfg.Stream.ReadStreams, cfg.Stream.WriteStreams, delivered)
+		readBW, writeBW := splitBandwidth(readStreams, writeStreams, delivered)
 		pts = append(pts, CurvePoint{
 			StreamsPerDrive: x,
 			TotalStreams:    x * float64(drives),
@@ -1086,6 +1248,7 @@ func sanitize(cfg *Config) []string {
 	cfg.Workload.BaselineEB = nonnegF("Baseline HDD", cfg.Workload.BaselineEB, &w)
 	cfg.Workload.ObservedTBpsPerEB = nonnegF("Observed scaling", cfg.Workload.ObservedTBpsPerEB, &w)
 	cfg.Workload.PrefetchHorizonHours = nonnegF("Prefetch horizon", cfg.Workload.PrefetchHorizonHours, &w)
+	cfg.Workload.FileSizeGB = nonnegF("File size", cfg.Workload.FileSizeGB, &w)
 	cfg.Prices.NodeCHF = nonnegF("Node price", cfg.Prices.NodeCHF, &w)
 	cfg.Prices.NVMeCHFPerTB = nonnegF("NVMe media price", cfg.Prices.NVMeCHFPerTB, &w)
 	cfg.Prices.HDDCHFPerTB = nonnegF("HDD media price", cfg.Prices.HDDCHFPerTB, &w)
@@ -1095,6 +1258,14 @@ func sanitize(cfg *Config) []string {
 	cfg.Power.NVMeDriveW = nonnegF("NVMe drive power", cfg.Power.NVMeDriveW, &w)
 	cfg.Power.HDDDriveW = nonnegF("HDD power", cfg.Power.HDDDriveW, &w)
 	cfg.Power.TapeDriveW = nonnegF("Tape drive power", cfg.Power.TapeDriveW, &w)
+	switch cfg.Layout {
+	case "", LayoutReplica:
+		cfg.Layout = LayoutReplica
+	case LayoutEC10p2:
+	default:
+		w = append(w, "HDD layout was unrecognized and was treated as 2 replica.")
+		cfg.Layout = LayoutReplica
+	}
 	if cfg.Workload.NVMeHitRate < 0 || cfg.Workload.NVMeHitRate > 1 || math.IsNaN(cfg.Workload.NVMeHitRate) {
 		w = append(w, "NVMe hit rate was outside 0–100% and was clamped.")
 		cfg.Workload.NVMeHitRate = clamp01(cfg.Workload.NVMeHitRate)

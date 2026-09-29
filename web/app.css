@@ -222,6 +222,8 @@ input:focus-visible, button:focus-visible {
   outline-offset: 2px;
 }
 
+.net.layout { grid-template-columns: 1fr 1fr; }
+
 .net {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -313,7 +315,43 @@ input:focus-visible, button:focus-visible {
   margin-top: 16px;
 }
 
-.results .sweep, .results .cost { grid-column: 1 / -1; }
+.results .sweep, .results .cost, .results .summary { grid-column: 1 / -1; }
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.summary-grid article {
+  background: var(--well);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 16px 16px 14px;
+}
+
+.summary-grid .k {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.summary-grid .v {
+  font-family: var(--mono);
+  font-size: 24px;
+  line-height: 1.15;
+  color: var(--nvme);
+}
+
+.summary-grid .split {
+  margin: 8px 0 0;
+  color: var(--faint);
+  font-size: 12px;
+  line-height: 1.4;
+}
 
 #cost-tiers {
   display: grid;
@@ -549,9 +587,13 @@ td.neg { color: var(--over); }
 
 .footnote { margin-top: 22px; }
 
+@media (max-width: 1280px) {
+  .summary-grid { grid-template-columns: 1fr 1fr; }
+}
+
 @media (max-width: 980px) {
-  .tier-grid, .results, .scenario .fields, .mins, #cost-tiers { grid-template-columns: 1fr; }
-  .results .sweep, .results .cost { grid-column: auto; }
+  .tier-grid, .results, .scenario .fields, .mins, #cost-tiers, .summary-grid { grid-template-columns: 1fr; }
+  .results .sweep, .results .cost, .results .summary { grid-column: auto; }
   h1 { font-size: 30px; }
 }
 

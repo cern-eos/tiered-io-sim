@@ -32,6 +32,12 @@ function pct(frac) {
   return (frac * 100).toFixed(1).replace(/\.0$/, "") + "%";
 }
 
+function factor(v) {
+  if (!Number.isFinite(v)) return "—";
+  const shown = Math.abs(v - Math.round(v)) < 1e-9 ? String(Math.round(v)) : trim(v, 2);
+  return shown + "×";
+}
+
 function intish(n) {
   return Math.round(n).toLocaleString("en-US");
 }
@@ -39,6 +45,22 @@ function intish(n) {
 function iops(n) {
   if (!Number.isFinite(n) || n <= 0) return "0";
   return intish(n);
+}
+
+function filesRate(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v) || v <= 0) return "0 /s";
+  if (v >= 100) return intish(v) + " /s";
+  if (v >= 10) return trim(v, 1) + " /s";
+  return trim(v, 2) + " /s";
+}
+
+function iopsCompact(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v) || v <= 0) return "0";
+  if (v >= 1e9) return trim(v / 1e9, 2) + " billion";
+  if (v >= 1e6) return trim(v / 1e6, 2) + " million";
+  return intish(v);
 }
 
 function chf(v) {
@@ -109,6 +131,11 @@ function radio(name) {
   return Number.isFinite(n) ? n : null;
 }
 
+function choice(name) {
+  const input = document.querySelector(`input[name="${name}"]:checked`);
+  return input ? input.value : null;
+}
+
 function fill(cfg) {
   setNum("nvme-nodes", cfg.nvme.nodes, 0);
   setRadio("nvme-net", cfg.nvme.networkGbps);
@@ -116,6 +143,7 @@ function fill(cfg) {
   setNum("nvme-size", cfg.nvme.driveSizeTB, 4);
   setNum("nvme-bw", cfg.nvme.driveBWGBps, 4);
   setNum("nvme-iops", cfg.nvme.driveIOPS, 0);
+  setRadio("hdd-layout", cfg.layout || "replica");
   setNum("hdd-nodes", cfg.hdd.nodes, 0);
   setRadio("hdd-net", cfg.hdd.networkGbps);
   setNum("hdd-drives", cfg.hdd.drivesPerNode, 0);
@@ -133,6 +161,7 @@ function fill(cfg) {
   setNum("tape-drives", cfg.tape.drives, 0);
   setNum("tape-bw-mb", cfg.tape.driveBWGBps * 1000, 4);
   setNum("tape-capacity", cfg.tape.capacityEB, 4);
+  setNum("file-size", cfg.workload.fileSizeGB, 4);
   setNum("compute-read", cfg.workload.computeReadGBps, 4);
   setNum("compute-write", cfg.workload.computeWriteGBps, 4);
   setNum("nvme-hit", cfg.workload.nvmeHitRate * 100, 4);
@@ -163,7 +192,7 @@ function readConfig() {
     "hdd-nodes", "hdd-drives", "hdd-size", "hdd-bw-mb", "hdd-iops",
     "read-streams", "write-streams", "segment-mb", "seek-ms",
     "tape-drives", "tape-bw-mb", "tape-capacity",
-    "compute-read", "compute-write", "nvme-hit", "prefetch-hours",
+    "file-size", "compute-read", "compute-write", "nvme-hit", "prefetch-hours",
     "working-set", "reserve-pct", "baseline-eb", "observed-scale",
     "archive-eb", "recall",
     "price-node", "price-nvme", "price-hdd", "price-tape-drive", "price-tape",
@@ -177,7 +206,8 @@ function readConfig() {
   }
   const nvmeNet = radio("nvme-net");
   const hddNet = radio("hdd-net");
-  if (nvmeNet === null || hddNet === null) return null;
+  const layout = choice("hdd-layout");
+  if (nvmeNet === null || hddNet === null || !layout) return null;
   return {
     nvme: {
       nodes: v["nvme-nodes"],
@@ -207,6 +237,7 @@ function readConfig() {
       seekMs: v["seek-ms"],
     },
     workload: {
+      fileSizeGB: v["file-size"],
       computeReadGBps: v["compute-read"],
       computeWriteGBps: v["compute-write"],
       nvmeHitRate: v["nvme-hit"] / 100,
@@ -232,6 +263,7 @@ function readConfig() {
       tapeDriveW: v["power-tape"],
     },
     hybrid: document.getElementById("hybrid").getAttribute("aria-pressed") === "true",
+    layout,
   };
 }
 
@@ -266,13 +298,42 @@ async function run() {
 function render(r) {
   renderBanner(r);
   renderFeet(r);
+  const layoutHint = document.getElementById("hdd-layout-hint");
+  if (layoutHint && r.flow && r.flow.layoutNote) layoutHint.textContent = r.flow.layoutNote;
   renderStack(r);
   renderBudgets(r);
   renderBounds(r);
   renderFormula(r);
   renderCost(r);
   renderSweep(r);
+  renderSummary(r);
   markPresets(r);
+}
+
+function renderSummary(r) {
+  const host = document.getElementById("summary");
+  if (!host || !r.summary) return;
+  const s = r.summary;
+  host.className = "summary-grid";
+  host.replaceChildren(
+    summaryFigure("Total I/O IOPS", iopsCompact(s.totalIOPS), `NVMe ${iopsCompact(s.nvmeIOPS)} · HDD ${iopsCompact(s.hddIOPS)}`),
+    summaryFigure("Files/s", filesRate(s.hddFilesPerSec), `${trim(s.fileSizeGB, 2)} GB files · HDD read ${filesRate(s.hddReadFilesPerSec)} · write ${filesRate(s.hddWriteFilesPerSec)} · NVMe ${filesRate(s.nvmeFilesPerSec)} · tape ${filesRate(s.tapeFilesPerSec)}`),
+    summaryFigure("Cost", chf(s.costCHF), "NVMe, HDD, and tape, including servers and media"),
+    summaryFigure("Total capacity", capEB(s.totalCapacityEB), `NVMe ${capEB(s.nvmeCapacityEB)} · HDD ${capEB(s.hddCapacityEB)} · tape ${capEB(s.tapeCapacityEB)}`),
+  );
+}
+
+function summaryFigure(label, value, split) {
+  const box = document.createElement("article");
+  box.append(el("span", "k", label), el("div", "v", value), el("p", "split", split));
+  return box;
+}
+
+function capEB(eb) {
+  const n = Number(eb);
+  if (!Number.isFinite(n)) return "0 EB";
+  if (Math.abs(n) >= 0.01) return trim(n, 2) + " EB";
+  return trim(n * 1000, 2) + " PB";
 }
 
 function renderBanner(r) {
@@ -336,6 +397,7 @@ function renderStack(r) {
       ["Drive BW", bw(r.nvme.driveAggregateGBps)],
       ["Served", bw(r.flow.nvmeServedGBps)],
       ["IOPS", iops(r.nvme.aggregateIOPS)],
+      ["Files/s", filesRate(r.summary.nvmeFilesPerSec)],
       ["Limit", sentence(r.nvme.limit)],
       [r.hybrid ? "Servers" : "Node cost", r.hybrid ? "None" : chf(r.cost.nvmeNodesCHF)],
       ["Media cost", chf(r.cost.nvmeMediaCHF)],
@@ -344,11 +406,17 @@ function renderStack(r) {
     ]),
     el("div", "flow", "Misses and staging"),
     block("hdd", "HDD", bw(r.hdd.deliveredGBps), [
+      ["Layout", r.flow.layoutName],
+      ["Disk streams", trim(r.hdd.streamsPerDrive, 2) + " / drive"],
       ["Capacity", capTB(r.hdd.capacityTB)],
       ["Stream total", bw(r.hdd.streamAggregateGBps)],
       ["Read BW", bw(r.hdd.readDeliveredGBps)],
       ["Write BW", bw(r.hdd.writeDeliveredGBps)],
       ["Degradation", pct(r.hdd.degradation)],
+      ["IOPS", iops(r.hdd.deliveredIOPS)],
+      ["Files/s", filesRate(r.summary.hddFilesPerSec)],
+      ["Read files/s", filesRate(r.summary.hddReadFilesPerSec)],
+      ["Write files/s", filesRate(r.summary.hddWriteFilesPerSec)],
       [r.hybrid ? "Shared network" : "Network", bw(r.hdd.networkGBps)],
       ["Observed", r.flow.observedEnabled ? bw(r.hdd.observedGBps) : "Off"],
       ["Hardware slack", bw(r.flow.hddSlackGBps)],
@@ -362,6 +430,7 @@ function renderStack(r) {
     block("tape", "Tape", bw(r.tape.bandwidthGBps), [
       ["Library", r.tape.capacityEB.toFixed(2) + " EB"],
       ["Drives", intish(r.tape.drives)],
+      ["Files/s", filesRate(r.summary.tapeFilesPerSec)],
       ["Archive", bw(r.flow.archiveGBps)],
       ["Recall", bw(r.flow.recallGBps)],
       ["Slack", bw(r.flow.tapeSlackGBps)],
@@ -421,16 +490,16 @@ function renderBudgets(r) {
   const hddSegs = [
     { name: "Compute read", value: r.flow.hddComputeReadGBps, color: "#f3efe8", text: bw(r.flow.hddComputeReadGBps) },
     { name: "Compute write", value: r.flow.hddComputeWriteGBps, color: "#b7aa9a", text: bw(r.flow.hddComputeWriteGBps) },
-    { name: "Archive", value: r.flow.archiveGBps, color: "#8f5e34", text: bw(r.flow.archiveGBps) },
-    { name: "Recall", value: r.flow.recallGBps, color: "#c4894a", text: bw(r.flow.recallGBps) },
+    { name: "Archive", value: r.flow.hddArchiveGBps, color: "#8f5e34", text: bw(r.flow.hddArchiveGBps) },
+    { name: "Recall", value: r.flow.hddRecallGBps, color: "#c4894a", text: bw(r.flow.hddRecallGBps) },
   ];
-  let hddCaption = `Delivered ${bw(r.hdd.deliveredGBps)}. Unallocated ${bw(r.flow.hddSlackGBps)}.`;
+  let hddCaption = `${r.flow.layoutName}: reads ${factor(r.flow.readVolume)}, writes ${factor(r.flow.writeVolume)}. Delivered ${bw(r.hdd.deliveredGBps)}. Unallocated ${bw(r.flow.hddSlackGBps)}.`;
   let marker = null;
   if (r.flow.hddSlackGBps >= 0) {
     hddSegs.push({ name: "Unallocated", value: r.flow.hddSlackGBps, color: "#3a3a3e", text: bw(r.flow.hddSlackGBps) });
   } else if (r.flow.hddDemandGBps > 0) {
     marker = r.hdd.deliveredGBps / r.flow.hddDemandGBps;
-    hddCaption = `Demand ${bw(r.flow.hddDemandGBps)} exceeds delivered ${bw(r.hdd.deliveredGBps)} by ${bw(-r.flow.hddSlackGBps)}. The white mark is delivered bandwidth.`;
+    hddCaption = `${r.flow.layoutName}: reads ${factor(r.flow.readVolume)}, writes ${factor(r.flow.writeVolume)}. Demand ${bw(r.flow.hddDemandGBps)} exceeds delivered ${bw(r.hdd.deliveredGBps)} by ${bw(-r.flow.hddSlackGBps)}. The white mark is delivered bandwidth.`;
   }
   if (r.flow.observedEnabled) {
     hddCaption += ` Observed scaling for this capacity is ${bw(r.hdd.observedGBps)}, with slack ${bw(r.flow.observedSlackGBps)}.`;
@@ -531,9 +600,9 @@ function renderFormula(r) {
   for (const line of r.formula.lines || []) list.append(el("li", "", line));
   const perDrive = r.hdd.drives > 0 ? r.hdd.aggregateIOPS / r.hdd.drives : 0;
   document.getElementById("iops-note").textContent =
-    `Rated random IOPS: ${iops(r.hdd.aggregateIOPS)} (${trim(perDrive, 0)} / drive). At this segment size the seek formula implies ${trim(r.hdd.formulaIOPSPerDrive, 1)} IOPS/drive.`;
+    `Rated random IOPS: ${iops(r.hdd.aggregateIOPS)} (${trim(perDrive, 0)} / drive). Streaming IOPS follow delivered bandwidth divided by the segment size: ${iops(r.hdd.deliveredIOPS)} (${trim(r.hdd.drives ? r.hdd.deliveredIOPS / r.hdd.drives : 0, 1)} / drive).`;
   document.getElementById("op-point").textContent =
-    `Operating point: ${intish(r.hdd.readStreams)} read and ${intish(r.hdd.writeStreams)} write streams, ${trim(r.hdd.streamsPerDrive, 2)} per drive. Degradation is ${pct(r.hdd.degradation)}. Delivered ${bw(r.hdd.deliveredGBps)} splits into ${bw(r.hdd.readDeliveredGBps)} read and ${bw(r.hdd.writeDeliveredGBps)} write.`;
+    `Operating point: ${intish(r.hdd.readStreams)} disk read and ${intish(r.hdd.writeStreams)} disk write streams, ${trim(r.hdd.streamsPerDrive, 2)} per drive. Degradation is ${pct(r.hdd.degradation)}. Delivered ${bw(r.hdd.deliveredGBps)} splits into ${bw(r.hdd.readDeliveredGBps)} read and ${bw(r.hdd.writeDeliveredGBps)} write.`;
   drawChart(r.curve || [], r.hdd.streamsPerDrive, r.flow.observedEnabled);
 }
 
@@ -619,7 +688,7 @@ function drawChart(curve, streams, observed) {
     svg.append(tick);
   }
   const label = svgEl("text", { x: (pad.l + W - pad.r) / 2, y: H - 6, "text-anchor": "middle", class: "axis-label" });
-  label.textContent = "Streams per drive (read + write)";
+  label.textContent = "Disk streams per drive";
   svg.append(label);
   svg.setAttribute("role", "img");
   svg.setAttribute("aria-label", `At ${trim(closest.streamsPerDrive, 2)} streams per drive, delivered bandwidth is ${bw(closest.deliveredGBps)} and seek degradation is ${pct(closest.degradation)}.`);
