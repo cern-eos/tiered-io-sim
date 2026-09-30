@@ -59,7 +59,7 @@ func TestDefaultScenario(t *testing.T) {
 	}
 	near(t, r.NVMe.DeliveredGBps, 2400, 1e-9, "nvme bw")
 	near(t, r.Tape.BandwidthGBps, 300, 1e-12, "tape")
-	near(t, r.HDD.CapacityEB, 1.4994, 1e-9, "hdd eb")
+	near(t, r.HDD.CapacityEB, 2.2491, 1e-9, "hdd eb")
 	near(t, float64(r.HDD.Drives), 74970, 0, "drives")
 	near(t, r.HDD.NetworkGBps, 10412.5, 1e-9, "net")
 	if r.Flow.Layout != LayoutEC10p2 {
@@ -103,7 +103,7 @@ func TestDefaultScenario(t *testing.T) {
 	near(t, r.Flow.NVMeEgressGBps, 3*r.Flow.NVMeThroughGBps, 1e-6, "nvme egress")
 	near(t, r.Bounds.ObservedMinEB, 1.1485, 5e-4, "obs min")
 	near(t, r.Bounds.HardwareMinEB, 1, 1e-9, "hw min")
-	if !r.Knee.HardwareOK || r.Knee.HardwareTargetEB != 1 {
+	if !r.Knee.HardwareOK || r.Knee.HardwareTargetEB != 1.25 {
 		t.Fatalf("hardware knee %+v", r.Knee)
 	}
 	if !r.Knee.ObservedOK || r.Knee.ObservedTargetEB != 1.25 {
@@ -113,7 +113,7 @@ func TestDefaultScenario(t *testing.T) {
 		t.Fatalf("verdict %+v", r.Verdict)
 	}
 	text := strings.Join(r.Verdict.Lines, " ")
-	for _, phrase := range []string{"1.25 EB", "40%", "7.16 TB/s", "10.6%", "1.15 EB", "1 EB", "4.78 TB/s per EB", "seek contention"} {
+	for _, phrase := range []string{"1.25 EB", "10%", "7.16 TB/s", "10.6%", "1.15 EB", "1 EB", "3.18 TB/s per EB", "seek contention"} {
 		if !strings.Contains(text, phrase) {
 			t.Fatalf("verdict missing %q\n%s", phrase, text)
 		}
@@ -134,11 +134,19 @@ func TestDefaultScenario(t *testing.T) {
 		}
 		prevDeg = p.Degradation
 	}
-	if len(r.Sweep) != 7 {
+	if len(r.Sweep) != 9 {
 		t.Fatalf("sweep len %d", len(r.Sweep))
 	}
-	var prev float64 = 1e9
-	for _, p := range r.Sweep {
+	if !r.Sweep[0].HDDOnly || r.Sweep[0].NVMeCHF != 0 || r.Sweep[0].TapeCHF != 0 {
+		t.Fatalf("hdd-only row %+v", r.Sweep[0])
+	}
+	near(t, r.Sweep[0].TargetEB, 4, 1e-12, "archive-sized hdd")
+	near(t, r.Sweep[0].CostCHF, r.Sweep[0].HDDCHF, 1e-6, "hdd-only cost")
+	var prev = r.Sweep[0].CapacityEB
+	for _, p := range r.Sweep[1:] {
+		if p.HDDOnly {
+			t.Fatal("hdd-only row is not first")
+		}
 		if p.CapacityEB > prev {
 			t.Fatalf("sweep not descending")
 		}
@@ -181,21 +189,46 @@ func TestSmallHDDOversubscribed(t *testing.T) {
 	}
 }
 
+func TestHDDOnlyFollowsTapeCapacity(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Tape.CapacityEB = 6
+	r := Evaluate(cfg)
+	if len(r.Sweep) == 0 || !r.Sweep[0].HDDOnly {
+		t.Fatal("missing hdd-only row")
+	}
+	near(t, r.Sweep[0].TargetEB, 6, 1e-12, "tape size")
+	wantNodes := NodesForEB(6, cfg.HDD.DrivesPerNode, cfg.HDD.DriveSizeTB)
+	if r.Sweep[0].Nodes != wantNodes {
+		t.Fatalf("nodes %d want %d", r.Sweep[0].Nodes, wantNodes)
+	}
+	if r.Sweep[0].NVMeCHF != 0 || r.Sweep[0].TapeCHF != 0 {
+		t.Fatalf("not pure hdd %+v", r.Sweep[0])
+	}
+
+	cfg.Tape.CapacityEB = 0
+	r = Evaluate(cfg)
+	for _, p := range r.Sweep {
+		if p.HDDOnly {
+			t.Fatal("hdd-only row with an empty library")
+		}
+	}
+}
+
 func TestDefaultCost(t *testing.T) {
 	r := Evaluate(DefaultConfig())
 	near(t, r.Cost.NVMeNodesCHF, 480_000, 1e-6, "nvme nodes")
 	near(t, r.Cost.NVMeMediaCHF, 3686.4*200, 1e-6, "nvme media")
 	near(t, r.Cost.HDDNodesCHF, 8_330_000, 1e-6, "hdd nodes")
-	near(t, r.Cost.HDDMediaCHF, 1_499_400*20, 1e-6, "hdd media")
+	near(t, r.Cost.HDDMediaCHF, 2_249_100*20, 1e-6, "hdd media")
 	near(t, r.Cost.TapeDrivesCHF, 750*25_000, 1e-6, "tape drives")
 	near(t, r.Cost.TapeMediaCHF, 40_000_000, 1e-6, "tape media")
-	near(t, r.Cost.TotalCHF, 98_285_280, 1e-3, "total")
-	near(t, r.Cost.BaselineHDDCHF, 63_894_000, 1e-3, "baseline hdd")
-	near(t, r.Cost.HDDDeltaCHF, 38_318_000-63_894_000, 1e-3, "hdd delta")
-	if r.Cost.BaselineNodes != 1389 {
+	near(t, r.Cost.TotalCHF, 113_279_280, 1e-3, "total")
+	near(t, r.Cost.BaselineHDDCHF, 59_264_000, 1e-3, "baseline hdd")
+	near(t, r.Cost.HDDDeltaCHF, 53_312_000-59_264_000, 1e-3, "hdd delta")
+	if r.Cost.BaselineNodes != 926 {
 		t.Fatalf("baseline nodes %d", r.Cost.BaselineNodes)
 	}
-	if got := fmtCHF(r.Cost.TotalCHF); got != "CHF 98.29 million" {
+	if got := fmtCHF(r.Cost.TotalCHF); got != "CHF 113.28 million" {
 		t.Fatalf("total format %q", got)
 	}
 	active := 0

@@ -14,7 +14,8 @@
         <div class="mark" aria-hidden="true"><i></i><i></i><i></i></div>
         <div>
           <h1>Tiered I/O Simulator</h1>
-          <p class="lede">NVMe performance cache, HDD active tier, and a tape carousel. HDD bandwidth is the multi-stream seek formula on every drive, then the minimum with the node network.</p>
+          <p class="credit">Designed by: Andreas-Joachim Peters - CERN IT Storage &amp; Data Management Group - <a href="mailto:andreas.joachim.peters@cern.ch">andreas.joachim.peters@cern.ch</a></p>
+          <p class="lede">Size an NVMe cache, an HDD tier, and a tape archive for a compute workload. The model shows the bandwidth each tier can deliver, how much disk the tape can replace, and the cost and power of that layout.</p>
         </div>
       </div>
     </header>
@@ -336,7 +337,7 @@
 
       <div class="card sweep" id="panel-sweep">
         <h3>HDD size sweep</h3>
-        <p class="hint">Same drives, network, stream settings, prices, power, and workload. Only the HDD node count changes, rounded to a whole node. Slack is delivered bandwidth minus compute, archive, and recall. A row stays within budget when the working set fits and slack is positive. NVMe and tape stay put; the HDD cost and the power column change with the node count.</p>
+        <p class="hint">The first row is a pure HDD system sized to the tape library, with no NVMe and no tape. Its total is the cost to compare with the tiered rows. The rows below keep the same drives, network, stream settings, prices, power, and workload, and change only the HDD node count. Slack is delivered bandwidth minus compute, archive, and recall. A row stays within budget when the working set fits and slack is positive.</p>
         <div class="table-scroll" id="sweep"></div>
       </div>
 

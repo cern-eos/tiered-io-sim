@@ -199,7 +199,7 @@ func DefaultConfig() Config {
 		},
 		HDD: NodeTier{
 			Nodes: 833, NetworkGbps: 100, DrivesPerNode: 90,
-			DriveSizeTB: 20, DriveBWGBps: 0.27, DriveIOPS: 300,
+			DriveSizeTB: 30, DriveBWGBps: 0.27, DriveIOPS: 300,
 		},
 		Tape: TapeTier{Drives: 750, DriveBWGBps: 0.4, CapacityEB: 4},
 		Stream: Stream{
@@ -393,6 +393,8 @@ type SweepPoint struct {
 	TapeCHF           float64 `json:"tapeCHF"`
 	CostCHF           float64 `json:"costCHF"`
 	PowerW            float64 `json:"powerW"`
+	// HDDOnly is a pure HDD system sized to the tape library, with no NVMe and no tape.
+	HDDOnly bool `json:"hddOnly"`
 }
 
 type Knee struct {
@@ -1174,7 +1176,7 @@ func evalCurve(cfg Config, capacityEB, networkGBps float64) []CurvePoint {
 var sweepTargets = []float64{2.5, 2, 1.5, 1.25, 1, 0.75, 0.5}
 
 func sweep(cfg Config) []SweepPoint {
-	pts := make([]SweepPoint, 0, len(sweepTargets)+1)
+	pts := make([]SweepPoint, 0, len(sweepTargets)+2)
 	seen := map[int]bool{}
 	for _, target := range sweepTargets {
 		nodes := NodesForEB(target, cfg.HDD.DrivesPerNode, cfg.HDD.DriveSizeTB)
@@ -1192,7 +1194,36 @@ func sweep(cfg Config) []SweepPoint {
 		pts = append(pts, makeSweep(st.HDD.CapacityEB, true, true, st))
 	}
 	sort.Slice(pts, func(i, j int) bool { return pts[i].CapacityEB > pts[j].CapacityEB })
+	if only, ok := hddOnlyComparison(cfg); ok {
+		pts = append([]SweepPoint{only}, pts...)
+	}
 	return pts
+}
+
+// hddOnlyComparison prices a pure HDD system large enough for the tape library.
+// NVMe and tape are absent, and archive and recall traffic are not charged.
+func hddOnlyComparison(cfg Config) (SweepPoint, bool) {
+	target := cfg.Tape.CapacityEB
+	nodes := NodesForEB(target, cfg.HDD.DrivesPerNode, cfg.HDD.DriveSizeTB)
+	if nodes == 0 {
+		return SweepPoint{}, false
+	}
+	c := cfg
+	c.Hybrid = false
+	c.Repack = false
+	c.HDD.Nodes = nodes
+	c.NVMe.Nodes = 0
+	c.NVMe.DrivesPerNode = 0
+	c.Tape.Drives = 0
+	c.Tape.CapacityEB = 0
+	c.Workload.ArchiveEBPerYear = 0
+	c.Workload.RecallGBps = 0
+	c.Workload.NVMeHitRate = 0
+	c.Workload.NVMeThroughFraction = 0
+	st := evaluate(c)
+	p := makeSweep(target, true, false, st)
+	p.HDDOnly = true
+	return p, true
 }
 
 func makeSweep(target float64, custom, active bool, st Result) SweepPoint {
@@ -1241,7 +1272,7 @@ func smallestCovering(pts []SweepPoint, observed bool) (float64, bool) {
 	target := 0.0
 	found := false
 	for _, p := range pts {
-		if p.Custom {
+		if p.Custom || p.HDDOnly {
 			continue
 		}
 		slack := p.HardwareSlackGBps

@@ -916,7 +916,8 @@ function renderSweep(r) {
   const host = document.getElementById("sweep");
   const table = document.createElement("table");
   const head = document.createElement("tr");
-  for (const label of ["Size", "Nodes", "Capacity", "Hardware", "Observed", "Tape/HW", "Tape/obs", "HW slack", "Obs slack", "Working set", "NVMe", "HDD", "Tape", "Total", "Power"]) {
+  const reference = (r.sweep || []).find((p) => p.hddOnly);
+  for (const label of ["Size", "Nodes", "Capacity", "Hardware", "Observed", "Tape/HW", "Tape/obs", "HW slack", "Obs slack", "Working set", "NVMe", "HDD", "Tape", "Total", "vs HDD", "Power"]) {
     head.append(el("th", "", label));
   }
   const thead = document.createElement("thead");
@@ -925,22 +926,24 @@ function renderSweep(r) {
   for (const p of r.sweep || []) {
     const tr = document.createElement("tr");
     if (p.active) tr.className = "active";
-    const size = p.custom ? "Custom" : p.targetEB.toFixed(2) + " EB";
+    const size = p.hddOnly ? "HDD only" : p.custom ? "Custom" : p.targetEB.toFixed(2) + " EB";
+    const compared = !reference || p.hddOnly ? "—" : chf(p.costCHF - reference.costCHF);
     const cells = [
       size,
       intish(p.nodes),
       p.capacityEB.toFixed(2) + " EB",
       bw(p.deliveredGBps),
       p.observedEnabled ? bw(p.observedGBps) : "—",
-      pct(p.tapeToHardware),
-      p.observedEnabled ? pct(p.tapeToObserved) : "—",
+      p.hddOnly ? "—" : pct(p.tapeToHardware),
+      p.hddOnly || !p.observedEnabled ? "—" : pct(p.tapeToObserved),
       bw(p.hardwareSlackGBps),
       p.observedEnabled ? bw(p.observedSlackGBps) : "—",
       p.workingSetFits ? "Fits" : "Short",
-      chf(p.nvmeCHF),
+      p.hddOnly ? "—" : chf(p.nvmeCHF),
       chf(p.hddCHF),
-      chf(p.tapeCHF),
+      p.hddOnly ? "—" : chf(p.tapeCHF),
       chf(p.costCHF),
+      compared,
       watts(p.powerW),
     ];
     cells.forEach((text, i) => {

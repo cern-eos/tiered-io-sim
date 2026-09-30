@@ -58,6 +58,16 @@ h1 {
   letter-spacing: -0.03em;
 }
 
+.credit {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: var(--hdd);
+}
+
+.credit a {
+  color: inherit;
+}
+
 h2, .card > h2 {
   font-family: var(--serif);
   font-weight: 500;
