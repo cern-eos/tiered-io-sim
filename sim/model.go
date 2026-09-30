@@ -483,28 +483,32 @@ type Summary struct {
 }
 
 type Result struct {
-	Hybrid   bool         `json:"hybrid"`
-	Repack   bool         `json:"repack"`
-	NVMe     TierStats    `json:"nvme"`
-	HDD      HDDStats     `json:"hdd"`
-	Tape     TapeStats    `json:"tape"`
-	Flow     Flow         `json:"flow"`
-	Formula  Formula      `json:"formula"`
-	Curve    []CurvePoint `json:"curve"`
-	Sweep    []SweepPoint `json:"sweep"`
-	Knee     Knee         `json:"knee"`
-	Bounds   Bounds       `json:"bounds"`
-	Cost     Cost         `json:"cost"`
-	Power    Power        `json:"power"`
-	Summary  Summary      `json:"summary"`
-	Verdict  Verdict      `json:"verdict"`
-	Warnings []string     `json:"warnings"`
+	Hybrid         bool                  `json:"hybrid"`
+	Repack         bool                  `json:"repack"`
+	NVMe           TierStats             `json:"nvme"`
+	HDD            HDDStats              `json:"hdd"`
+	Tape           TapeStats             `json:"tape"`
+	Flow           Flow                  `json:"flow"`
+	Formula        Formula               `json:"formula"`
+	Curve          []CurvePoint          `json:"curve"`
+	Sweep          []SweepPoint          `json:"sweep"`
+	ArchiveCost    []ArchiveCostPoint    `json:"archiveCost"`
+	ArchiveRewrite []ArchiveRewritePoint `json:"archiveRewrite"`
+	Knee           Knee                  `json:"knee"`
+	Bounds         Bounds                `json:"bounds"`
+	Cost           Cost                  `json:"cost"`
+	Power          Power                 `json:"power"`
+	Summary        Summary               `json:"summary"`
+	Verdict        Verdict               `json:"verdict"`
+	Warnings       []string              `json:"warnings"`
 }
 
 func Evaluate(cfg Config) Result {
 	warnings := sanitize(&cfg)
 	r := evaluate(cfg)
 	r.Sweep = sweep(cfg)
+	r.ArchiveCost = archiveCostSeries(cfg, r.Cost.NVMeCHF, r.NVMe.CapacityTB)
+	r.ArchiveRewrite = archiveRewriteSeries(cfg)
 	r.Knee = kneeFrom(r.Sweep)
 	r.Verdict = buildVerdict(r)
 	r.Warnings = warnings
@@ -1174,6 +1178,97 @@ func evalCurve(cfg Config, capacityEB, networkGBps float64) []CurvePoint {
 }
 
 var sweepTargets = []float64{2.5, 2, 1.5, 1.25, 1, 0.75, 0.5}
+
+const (
+	archiveCostBufferEB = 2.5
+	archiveCostMaxEB    = 20
+	archiveCostStepEB   = 2
+)
+
+// ArchiveCostPoint is one bar of the archive cost plot.
+// The first point is a pure HDD system the size of the tape library.
+// Later points keep a 2.5 EB HDD buffer and the configured tape drives,
+// and grow the cartridge pool. CHF per TB uses usable capacity: HDD raw
+// capacity divided by the layout write factor, plus NVMe and tape as stored.
+type ArchiveCostPoint struct {
+	HDDOnly    bool    `json:"hddOnly"`
+	ArchiveEB  float64 `json:"archiveEB"`
+	TotalCHF   float64 `json:"totalCHF"`
+	CapacityTB float64 `json:"capacityTB"`
+	CHFperTB   float64 `json:"chfPerTB"`
+}
+
+func archiveCostSeries(cfg Config, nvmeCHF, nvmeTB float64) []ArchiveCostPoint {
+	start := cfg.Tape.CapacityEB
+	if start <= 0 || math.IsNaN(start) {
+		return nil
+	}
+	amp := layoutOf(cfg.Layout).WriteVolume
+	if amp <= 0 || math.IsNaN(amp) {
+		amp = 1
+	}
+	onlyTB, onlyCHF := hddFleetCost(cfg, start)
+	pts := []ArchiveCostPoint{archivePoint(true, start, onlyCHF, onlyTB/amp)}
+	bufferTB, bufferCHF := hddFleetCost(cfg, archiveCostBufferEB)
+	usableBuffer := bufferTB / amp
+	driveCHF := float64(cfg.Tape.Drives) * cfg.Prices.TapeDriveCHF
+	for eb := start; eb <= archiveCostMaxEB+1e-9; eb += archiveCostStepEB {
+		mediaTB := eb * 1e6
+		total := nvmeCHF + bufferCHF + driveCHF + mediaTB*cfg.Prices.TapeCHFPerTB
+		usable := nvmeTB + usableBuffer + mediaTB
+		pts = append(pts, archivePoint(false, eb, total, usable))
+	}
+	return pts
+}
+
+// ArchiveRewritePoint is how many times the tape library can be read and
+// written back in one year when half the drive bandwidth reads and half writes.
+type ArchiveRewritePoint struct {
+	ArchiveEB float64 `json:"archiveEB"`
+	PerYear   float64 `json:"perYear"`
+}
+
+func archiveRewriteSeries(cfg Config) []ArchiveRewritePoint {
+	start := cfg.Tape.CapacityEB
+	if start <= 0 || math.IsNaN(start) {
+		return nil
+	}
+	bw := float64(cfg.Tape.Drives) * cfg.Tape.DriveBWGBps
+	if bw < 0 || math.IsNaN(bw) {
+		bw = 0
+	}
+	perYearEB := gbpsToEBPerYear(bw / 2)
+	pts := make([]ArchiveRewritePoint, 0, 9)
+	for eb := start; eb <= archiveCostMaxEB+1e-9; eb += archiveCostStepEB {
+		n := 0.0
+		if eb > 0 {
+			n = perYearEB / eb
+		}
+		pts = append(pts, ArchiveRewritePoint{ArchiveEB: eb, PerYear: n})
+	}
+	return pts
+}
+
+func hddFleetCost(cfg Config, targetEB float64) (tb, chf float64) {
+	nodes := NodesForEB(targetEB, cfg.HDD.DrivesPerNode, cfg.HDD.DriveSizeTB)
+	tb = float64(nodes*cfg.HDD.DrivesPerNode) * cfg.HDD.DriveSizeTB
+	chf = float64(nodes)*cfg.Prices.NodeCHF + tb*cfg.Prices.HDDCHFPerTB
+	return tb, chf
+}
+
+func archivePoint(hddOnly bool, archiveEB, total, capTB float64) ArchiveCostPoint {
+	per := 0.0
+	if capTB > 0 {
+		per = total / capTB
+	}
+	return ArchiveCostPoint{
+		HDDOnly:    hddOnly,
+		ArchiveEB:  archiveEB,
+		TotalCHF:   total,
+		CapacityTB: capTB,
+		CHFperTB:   per,
+	}
+}
 
 func sweep(cfg Config) []SweepPoint {
 	pts := make([]SweepPoint, 0, len(sweepTargets)+2)

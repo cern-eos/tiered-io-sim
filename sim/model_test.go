@@ -214,6 +214,72 @@ func TestHDDOnlyFollowsTapeCapacity(t *testing.T) {
 	}
 }
 
+func TestArchiveCostPlot(t *testing.T) {
+	r := Evaluate(DefaultConfig())
+	pts := r.ArchiveCost
+	if len(pts) != 10 {
+		t.Fatalf("len %d", len(pts))
+	}
+	if !pts[0].HDDOnly || pts[1].HDDOnly {
+		t.Fatalf("first bins %+v %+v", pts[0], pts[1])
+	}
+	near(t, pts[0].ArchiveEB, 4, 1e-12, "hdd archive")
+	near(t, pts[0].TotalCHF, r.Sweep[0].CostCHF, 1e-3, "pure hdd cost")
+	near(t, pts[0].CHFperTB, pts[0].TotalCHF/pts[0].CapacityTB, 1e-9, "pure per tb")
+	near(t, pts[0].CapacityTB, r.Sweep[0].CapacityEB*1e6/1.1, 1e-6, "ec usable")
+	ecOnly := pts[0].CHFperTB
+	ecTier := pts[1].CHFperTB
+	near(t, pts[1].ArchiveEB, 4, 1e-12, "tier start")
+	near(t, pts[len(pts)-1].ArchiveEB, 20, 1e-12, "tier end")
+	if pts[0].CHFperTB <= pts[1].CHFperTB {
+		t.Fatalf("pure HDD %g should exceed the tiered library %g", pts[0].CHFperTB, pts[1].CHFperTB)
+	}
+	if pts[1].CHFperTB <= pts[len(pts)-1].CHFperTB {
+		t.Fatalf("price per TB did not fall: %g to %g", pts[1].CHFperTB, pts[len(pts)-1].CHFperTB)
+	}
+	for i := 2; i < len(pts); i++ {
+		if pts[i].ArchiveEB-pts[i-1].ArchiveEB != 2 {
+			t.Fatalf("step %+v %+v", pts[i-1], pts[i])
+		}
+	}
+
+	cfg := DefaultConfig()
+	cfg.Tape.CapacityEB = 6
+	r = Evaluate(cfg)
+	if !r.ArchiveCost[0].HDDOnly || r.ArchiveCost[0].ArchiveEB != 6 || r.ArchiveCost[1].ArchiveEB != 6 {
+		t.Fatalf("resized %+v", r.ArchiveCost[:2])
+	}
+	if r.ArchiveCost[len(r.ArchiveCost)-1].ArchiveEB != 20 {
+		t.Fatalf("end %g", r.ArchiveCost[len(r.ArchiveCost)-1].ArchiveEB)
+	}
+
+	if r.ArchiveRewrite[0].ArchiveEB != 6 {
+		t.Fatalf("rewrite start %g", r.ArchiveRewrite[0].ArchiveEB)
+	}
+
+	base := Evaluate(DefaultConfig())
+	rewrites := gbpsToEBPerYear(150) / 4
+	if len(base.ArchiveRewrite) != 9 {
+		t.Fatalf("rewrite len %d", len(base.ArchiveRewrite))
+	}
+	near(t, base.ArchiveRewrite[0].ArchiveEB, 4, 1e-12, "rewrite start")
+	near(t, base.ArchiveRewrite[0].PerYear, rewrites, 1e-9, "rewrite rate")
+	near(t, base.ArchiveRewrite[len(base.ArchiveRewrite)-1].ArchiveEB, 20, 1e-12, "rewrite end")
+	near(t, base.ArchiveRewrite[len(base.ArchiveRewrite)-1].PerYear, gbpsToEBPerYear(150)/20, 1e-9, "rewrite at 20")
+	if base.ArchiveRewrite[0].PerYear <= base.ArchiveRewrite[len(base.ArchiveRewrite)-1].PerYear {
+		t.Fatal("rewrites did not fall")
+	}
+
+	cfg = DefaultConfig()
+	cfg.Layout = LayoutReplica
+	rep := Evaluate(cfg)
+
+	near(t, rep.ArchiveCost[0].CHFperTB, ecOnly*(2/1.1), 1e-6, "replica usable price")
+	if rep.ArchiveCost[1].CHFperTB <= ecTier {
+		t.Fatalf("replica tier %g ec %g", rep.ArchiveCost[1].CHFperTB, ecTier)
+	}
+}
+
 func TestDefaultCost(t *testing.T) {
 	r := Evaluate(DefaultConfig())
 	near(t, r.Cost.NVMeNodesCHF, 480_000, 1e-6, "nvme nodes")

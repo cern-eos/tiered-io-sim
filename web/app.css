@@ -344,7 +344,7 @@ input:focus-visible, button:focus-visible {
   margin-top: 16px;
 }
 
-.results .sweep, .results .cost, .results .summary, .results .flow-card { grid-column: 1 / -1; }
+.results .sweep, .results .cost, .results .summary, .results .flow-card, .results .archive-cost { grid-column: 1 / -1; }
 
 .summary-grid {
   display: grid;
@@ -494,6 +494,9 @@ input:focus-visible, button:focus-visible {
 .swatch.network { background: #9a8f82; }
 .swatch.observed { background: #5c3d22; }
 .swatch.degrade { background: #e8d2b0; }
+.swatch.hdd { background: #c4894a; }
+.swatch.tier { background: #8f5e34; }
+.swatch.now { background: #e4c39a; }
 
 .mins {
   display: grid;
@@ -606,6 +609,19 @@ td.neg { color: var(--over); }
 #chart .marker-line { stroke: rgba(228, 195, 154, 0.55); stroke-width: 1; }
 #chart .marker-dot { fill: #f3efe8; }
 #chart .marker-deg { fill: #e8d2b0; }
+
+#archive-cost svg, #archive-rewrite svg { width: 100%; height: auto; display: block; }
+#archive-cost .grid, #archive-rewrite .grid { stroke: rgba(212, 168, 112, 0.18); stroke-width: 1; }
+#archive-cost .tick, #archive-cost .axis-label,
+#archive-rewrite .tick, #archive-rewrite .axis-label {
+  fill: #b7aa9a;
+  font-size: 11px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+#archive-cost .bar.hdd { fill: #c4894a; }
+#archive-cost .bar.tier { fill: #8f5e34; }
+#archive-cost .bar.tier.now, #archive-rewrite .bar.now { fill: #e4c39a; }
+#archive-rewrite .bar { fill: #8f5e34; }
 
 .op {
   margin: 8px 0 0;
@@ -845,7 +861,7 @@ td.neg { color: var(--over); }
 
 @media (max-width: 980px) {
   .tier-grid, .results, .scenario .fields, .mins, #cost-tiers, .summary-grid { grid-template-columns: 1fr; }
-  .results .sweep, .results .cost, .results .summary, .results .flow-card { grid-column: auto; }
+  .results .sweep, .results .cost, .results .summary, .results .flow-card, .results .archive-cost { grid-column: auto; }
   .flow-board {
     grid-template-columns: 1fr;
     grid-template-areas:

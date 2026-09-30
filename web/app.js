@@ -312,6 +312,7 @@ function render(r) {
   renderFormula(r);
   renderCost(r);
   renderSweep(r);
+  renderArchiveCost(r);
   renderFlow(r);
   renderSummary(r);
   markPresets(r);
@@ -870,6 +871,131 @@ function drawChart(curve, streams, observed) {
     legend.append(item);
   }
   host.append(svg, legend);
+}
+
+function renderArchiveCost(r) {
+  const host = document.getElementById("archive-cost");
+  if (!host) return;
+  host.replaceChildren();
+  const pts = r.archiveCost || [];
+  if (!pts.length) {
+    host.append(el("p", "hint", "Set a tape library size to plot the archive cost."));
+    return;
+  }
+  const W = 640;
+  const H = 280;
+  const pad = { l: 58, r: 16, t: 16, b: 42 };
+  const maxY = niceMax(Math.max(...pts.map((p) => p.chfPerTB), 1));
+  const n = pts.length;
+  const plotW = W - pad.l - pad.r;
+  const plotH = H - pad.t - pad.b;
+  const gap = 6;
+  const barW = Math.max(4, (plotW - gap * (n + 1)) / n);
+  const yOf = (v) => pad.t + (1 - v / maxY) * plotH;
+  const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}` });
+  for (let i = 0; i <= 4; i++) {
+    const val = (maxY * i) / 4;
+    const y = yOf(val);
+    svg.append(svgEl("line", { x1: pad.l, x2: W - pad.r, y1: y, y2: y, class: "grid" }));
+    const tick = svgEl("text", { x: pad.l - 8, y: y + 4, "text-anchor": "end", class: "tick" });
+    tick.textContent = trim(val, val >= 100 ? 0 : 1);
+    svg.append(tick);
+  }
+  pts.forEach((p, i) => {
+    const x = pad.l + gap + i * (barW + gap);
+    const y = yOf(p.chfPerTB);
+    const h = Math.max(0, pad.t + plotH - y);
+    const cls = p.hddOnly ? "bar hdd" : "bar tier" + (i === 1 ? " now" : "");
+    const rect = svgEl("rect", { x: x.toFixed(2), y: y.toFixed(2), width: barW.toFixed(2), height: h.toFixed(2), class: cls, rx: "2" });
+    const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
+    title.textContent = p.hddOnly
+      ? `Pure HDD at ${trim(p.archiveEB, 2)} EB: ${trim(p.chfPerTB, 2)} CHF/TB`
+      : `${trim(p.archiveEB, 2)} EB tape: ${trim(p.chfPerTB, 2)} CHF/TB`;
+    rect.append(title);
+    svg.append(rect);
+    const label = svgEl("text", { x: (x + barW / 2).toFixed(2), y: H - pad.b + 16, "text-anchor": "middle", class: "tick" });
+    const whole = Math.abs(p.archiveEB - Math.round(p.archiveEB)) < 0.05;
+    label.textContent = p.hddOnly ? "HDD" : whole ? String(Math.round(p.archiveEB)) : trim(p.archiveEB, 1);
+    svg.append(label);
+  });
+  const axis = svgEl("text", { x: (pad.l + W - pad.r) / 2, y: H - 4, "text-anchor": "middle", class: "axis-label" });
+  axis.textContent = "Tape archive (EB)";
+  svg.append(axis);
+  const unitY = pad.t + plotH / 2;
+  const unit = svgEl("text", { x: 12, y: unitY, "text-anchor": "middle", class: "axis-label", transform: `rotate(-90 12 ${unitY})` });
+  unit.textContent = "CHF/TB";
+  svg.append(unit);
+  const first = pts[0];
+  const last = pts[pts.length - 1];
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", `Pure HDD at ${trim(first.archiveEB, 2)} EB costs ${trim(first.chfPerTB, 2)} CHF per TB. With a 2.5 EB HDD buffer the tiered system is ${trim(pts[1] ? pts[1].chfPerTB : last.chfPerTB, 2)} CHF per TB at the library size and ${trim(last.chfPerTB, 2)} CHF per TB at ${trim(last.archiveEB, 2)} EB of tape.`);
+  const legend = el("div", "legend");
+  for (const [cls, name] of [["hdd", "Pure HDD"], ["tier", "Tiered archive"], ["now", "Library size"]]) {
+    const item = el("span");
+    item.append(el("i", "swatch " + cls), document.createTextNode(name));
+    legend.append(item);
+  }
+  host.append(svg, legend);
+  renderArchiveRewrite(r);
+}
+
+function renderArchiveRewrite(r) {
+  const host = document.getElementById("archive-rewrite");
+  if (!host) return;
+  host.replaceChildren();
+  const pts = r.archiveRewrite || [];
+  if (!pts.length) {
+    host.append(el("p", "hint", "Set a tape library size to plot archive rewrites."));
+    return;
+  }
+  const W = 640;
+  const H = 280;
+  const pad = { l: 58, r: 16, t: 16, b: 42 };
+  const maxY = niceMax(Math.max(...pts.map((p) => p.perYear), 0.1));
+  const n = pts.length;
+  const plotW = W - pad.l - pad.r;
+  const plotH = H - pad.t - pad.b;
+  const gap = 6;
+  const barW = Math.max(4, (plotW - gap * (n + 1)) / n);
+  const yOf = (v) => pad.t + (1 - v / maxY) * plotH;
+  const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}` });
+  for (let i = 0; i <= 4; i++) {
+    const val = (maxY * i) / 4;
+    const y = yOf(val);
+    svg.append(svgEl("line", { x1: pad.l, x2: W - pad.r, y1: y, y2: y, class: "grid" }));
+    const tick = svgEl("text", { x: pad.l - 8, y: y + 4, "text-anchor": "end", class: "tick" });
+    tick.textContent = trim(val, val >= 10 ? 1 : 2);
+    svg.append(tick);
+  }
+  pts.forEach((p, i) => {
+    const x = pad.l + gap + i * (barW + gap);
+    const y = yOf(p.perYear);
+    const h = Math.max(0, pad.t + plotH - y);
+    const rect = svgEl("rect", {
+      x: x.toFixed(2), y: y.toFixed(2), width: barW.toFixed(2), height: h.toFixed(2),
+      class: "bar" + (i === 0 ? " now" : ""), rx: "2",
+    });
+    const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
+    title.textContent = `${trim(p.archiveEB, 2)} EB: ${trim(p.perYear, 2)} rewrites per year`;
+    rect.append(title);
+    svg.append(rect);
+    const label = svgEl("text", { x: (x + barW / 2).toFixed(2), y: H - pad.b + 16, "text-anchor": "middle", class: "tick" });
+    const whole = Math.abs(p.archiveEB - Math.round(p.archiveEB)) < 0.05;
+    label.textContent = whole ? String(Math.round(p.archiveEB)) : trim(p.archiveEB, 1);
+    svg.append(label);
+  });
+  const axis = svgEl("text", { x: (pad.l + W - pad.r) / 2, y: H - 4, "text-anchor": "middle", class: "axis-label" });
+  axis.textContent = "Tape archive (EB)";
+  svg.append(axis);
+  const unitY = pad.t + plotH / 2;
+  const unit = svgEl("text", { x: 12, y: unitY, "text-anchor": "middle", class: "axis-label", transform: `rotate(-90 12 ${unitY})` });
+  unit.textContent = "per year";
+  svg.append(unit);
+  const first = pts[0];
+  const last = pts[pts.length - 1];
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", `A ${trim(first.archiveEB, 2)} EB archive can be rewritten ${trim(first.perYear, 2)} times per year. At ${trim(last.archiveEB, 2)} EB that falls to ${trim(last.perYear, 2)}.`);
+  host.append(svg);
 }
 
 function renderCost(r) {

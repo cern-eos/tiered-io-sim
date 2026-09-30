@@ -341,6 +341,15 @@
         <div class="table-scroll" id="sweep"></div>
       </div>
 
+      <div class="card archive-cost" id="panel-archive-cost">
+        <h3>Archive cost</h3>
+        <p class="hint">Bars are CHF per usable TB. The first bar is a pure HDD system the size of the tape library. Usable HDD capacity is the raw capacity divided by the layout: 2 for replication and 1.1 for 10+2 erasure coding. The following bars keep a 2.5 EB raw HDD buffer, the configured NVMe tier, and the configured tape drive count. The cartridge pool grows from the library size to 20 EB in steps of 2 EB. NVMe and tape terabytes count in full; HDD terabytes count as usable.</p>
+        <div id="archive-cost"></div>
+        <h3 class="spaced">Archive rewrites</h3>
+        <p class="hint">Half the tape bandwidth reads the library and half writes it back at the same time. Each bar is how many full rewrites that rate finishes in one year, from the library size to 20 EB in steps of 2 EB. The drive count stays fixed.</p>
+        <div id="archive-rewrite"></div>
+      </div>
+
       <div class="card summary" id="panel-summary">
         <h3>Summary</h3>
         <div id="summary"></div>
